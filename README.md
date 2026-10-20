@@ -18,6 +18,7 @@
 | **结构化输出** | TL;DR、关键要点、章节索引、分段带时间戳的摘要、关键洞察 |
 | **分P 支持** | 多 P 视频可选择任意一集单独总结 |
 | **弹幕抓取** | 可选抓取弹幕并附在摘要末尾 |
+| **桌面快捷方式** | 一键在桌面创建快捷方式（Windows / macOS / Linux 各自适配） |
 | **导出** | 一键复制 Markdown、保存为 `.md`、导出 `.srt` 字幕 |
 | **内置登录** | 应用内弹出 B 站登录窗口，Cookie 存在本地，不经过第三方 |
 | **无需后端** | 全部逻辑在本地，配置与密钥只存在你自己的电脑上 |
@@ -188,12 +189,67 @@ npm run probe                  # 检查 B 站各接口是否可用
 npm run check:audio            # 检查音频下载与 ffmpeg 转码
 npm run check:e2e              # 用假模型跑完整流程，产出示例 Markdown
 npm run check:e2e -- --synthetic   # 视频没字幕时用合成字幕继续验证链路
+npm run check:shortcut         # 在 Electron 里验证快捷方式创建/更新/删除
 ```
 
 `npm run check:e2e` 不消耗任何模型额度，但会完整跑通
 「取信息 → 取字幕 → 分块 → 摘要 → 渲染」，产出一份 `dist/e2e-sample.md`。
 
 这些脚本会真实访问 B 站接口。
+
+---
+
+## 桌面快捷方式
+
+在「设置 → 应用」里点 **创建桌面快捷方式** 即可在桌面生成快捷方式，无需任何手动操作。
+
+- **Windows**：生成 `.lnk`，指向当前运行的 `BiliSummary.exe`，图标取自 exe 内嵌图标
+  （即 `resources/icon.ico`），并设置 `AppUserModelID`，使任务栏分组与运行中的窗口一致。
+- **macOS**：在桌面创建指向 `.app` 包体的符号链接（`BiliSummary.app`），双击即可启动，
+  图标自动显示应用图标。
+- **Linux**：生成标准的 `.desktop` 文件并赋予可执行权限，同时写入
+  `~/.local/share/applications/`。
+
+重复点击不会产生重复项：已存在时会**更新**原有快捷方式的指向（例如应用被移动过、
+或重装到了新目录），而不是新建第二个。
+
+失败时会明确区分原因：
+
+| 情况 | 提示 |
+| --- | --- |
+| 桌面目录不可写 | 「没有写入桌面的权限…可尝试以管理员身份运行」 |
+| 文件被占用 | 「文件可能正被占用…请稍后重试」（Windows 会自动重试 5 次） |
+| macOS 非标准包体 | 「无法定位 .app 包体」 |
+
+### 打包配置里需要改动的位置
+
+全部集中在 `electron-builder.yml`：
+
+| 位置 | 配置项 | 作用 |
+| --- | --- | --- |
+| 顶部 | `appId: com.bilisummary.app` | **必须**与 `src/main/shortcut.ts` 的 `APP_USER_MODEL_ID` 一致，否则 Windows 上快捷方式与窗口会分成两个任务栏分组 |
+| 顶部 | `productName: BiliSummary` | 决定 `app.getName()`，即快捷方式的文件名 |
+| `win` | `icon: resources/icon.ico` | 同时用于 exe 与桌面快捷方式的图标 |
+| `nsis` | `createDesktopShortcut: true` | **安装时**自动在桌面创建快捷方式（与运行时的按钮互补） |
+| `nsis` | `createStartMenuShortcut: true` | 开始菜单入口 |
+| `nsis` | `shortcutName: BiliSummary` | 安装时创建的快捷方式名称 |
+| `mac` | `icon: resources/icon.png` | macOS 图标 |
+| `mac` | `target: dmg` | dmg 默认安装到 `/Applications`，运行时的符号链接才能指向正确位置 |
+| `linux` | `desktop.entry` | 安装时创建的 `.desktop` 入口 |
+
+> **macOS 沙箱限制**：若把 `mac.target` 改成 `mas`（Mac App Store），应用处于沙箱中，
+> 无权写入桌面。此时需在 `entitlements.mac.plist` 中声明
+> `com.apple.security.files.desktop` 权限，否则运行时的快捷方式创建会失败。
+
+### 验证打包版的快捷方式功能
+
+```bash
+npm run dist:win                 # 先打包
+npm run check:shortcut:packaged  # 在已打包的应用里自检（创建->校验->重复->删除）
+npm run check:shortcut:ui        # 用 DevTools 协议真实点击界面按钮，验证整条链路
+```
+
+两个脚本都会在桌面创建并删除测试用快捷方式，不会留下残留。
 
 ---
 
