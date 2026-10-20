@@ -82,6 +82,23 @@ export async function runJob(opts: RunJobOptions): Promise<JobResult> {
 
     // --- 2. 字幕 / 转写 ---
     const provider = opts.provider ?? createProvider(providerKind, config, client);
+
+    // Ollama 没指定模型时自动挑一个本机已装的
+    if (provider.kind === 'ollama') {
+      const ollama = provider as { resolveModel?: () => Promise<string> };
+      if (typeof ollama.resolveModel === 'function') {
+        try {
+          const model = await ollama.resolveModel();
+          report('fetching-info', `使用本地模型 ${model}`, 18);
+        } catch (err) {
+          throw new JobError(
+            (err as Error).message,
+            '请先启动 Ollama（终端执行 ollama serve），并确认已下载对话模型（ollama pull qwen3:8b）。',
+          );
+        }
+      }
+    }
+
     provider.bind?.({
       bvid,
       cid,
@@ -222,7 +239,8 @@ async function acquireTranscript(params: {
   if (forceSource === 'subtitle') {
     throw new JobError(
       '该视频没有可用的官方字幕。',
-      '若该视频确实没有字幕，可以在「摘要来源」里改选「语音识别」自动转写。',
+      '若该视频确实没有字幕，可以在「摘要来源」里改选「语音识别」自动转写' +
+        '（首次使用需在「设置 → 语音识别」点「一键安装」）。',
     );
   }
 
@@ -233,7 +251,8 @@ async function acquireTranscript(params: {
 
   throw new JobError(
     '没有可用的字幕，且未配置语音识别（ASR）作为备选方案。',
-    '请在「设置」中登录 B 站以获取官方字幕，或配置 ASR（OpenAI 兼容接口 / whisper.cpp）。',
+    '两条路任选其一：① 在「设置 → 语音识别」点「一键安装」装好本地 whisper（无需账号）；' +
+      '② 在「设置 → B 站登录」登录后重新获取官方字幕。',
   );
 }
 

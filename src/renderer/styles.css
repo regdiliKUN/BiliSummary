@@ -785,6 +785,22 @@ body {
   line-height: 1.6;
 }
 
+.install-box {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.install-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
 .test-result {
   font-size: 12px;
   color: var(--text-faint);

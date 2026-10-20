@@ -40,6 +40,14 @@ export interface BiliSummaryApi {
   /* 检测 */
   checkProvider(kind: LlmProviderKind): Promise<{ ok: boolean; message: string }>;
   checkAsr(): Promise<{ ok: boolean; message: string }>;
+  listOllamaModels(baseUrl?: string): Promise<{ ok: boolean; models: string[]; message?: string }>;
+
+  /* ASR 一键安装 */
+  installAsr(model: string): Promise<{ ok: boolean; message: string; binaryPath?: string; modelPath?: string }>;
+  cancelAsrInstall(): Promise<{ ok: boolean }>;
+  onAsrInstallProgress(
+    cb: (p: { percent: number; message: string; stage: string }) => void,
+  ): () => void;
 
   /* 文件 */
   saveMarkdown(defaultName: string, content: string): Promise<{ ok: boolean; path?: string; canceled?: boolean }>;
@@ -100,6 +108,14 @@ const api: BiliSummaryApi = {
 
   checkProvider: (kind) => ipcRenderer.invoke('provider:check', kind),
   checkAsr: () => ipcRenderer.invoke('asr:check'),
+  listOllamaModels: (baseUrl) => ipcRenderer.invoke('ollama:listModels', baseUrl),
+  installAsr: (model) => ipcRenderer.invoke('asr:install', model),
+  cancelAsrInstall: () => ipcRenderer.invoke('asr:cancelInstall'),
+  onAsrInstallProgress: (cb) => {
+    const listener = (_e: unknown, p: { percent: number; message: string; stage: string }) => cb(p);
+    ipcRenderer.on('asr:install:progress', listener);
+    return () => ipcRenderer.removeListener('asr:install:progress', listener);
+  },
 
   saveMarkdown: (defaultName, content) =>
     ipcRenderer.invoke('file:save', defaultName, content),

@@ -569,6 +569,7 @@ export class BilibiliClient {
     const model = data?.model_result;
     if (!model) return null;
 
+    const summary = normalizeText(String(model.summary ?? ''));
     const outline = (model.outline || [])
       .map((o: any) => ({
         start: Number(o.timestamp_start ?? 0),
@@ -577,10 +578,11 @@ export class BilibiliClient {
       }))
       .filter((o: any) => o.title);
 
-    return {
-      summary: normalizeText(String(model.summary ?? '')),
-      outline,
-    };
+    // model_result 存在但内容为空是常见情况（视频没有官方总结），
+    // 这时要明确返回 null，否则会被当成"有官方总结"却拿不到任何内容。
+    if (!summary && !outline.length) return null;
+
+    return { summary, outline };
   }
 
   /**

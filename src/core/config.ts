@@ -19,10 +19,12 @@ export const DEFAULT_CONFIG: AppConfig = {
   },
   ollama: {
     baseUrl: 'http://127.0.0.1:11434',
-    model: 'qwen2.5:7b',
+    // 留空表示自动选择本机已安装的模型
+    model: '',
     temperature: 0.3,
     maxTokens: 4096,
     contextChars: 8000,
+    disableThinking: true,
   },
   bilibili: {
     useOutlineAsTitles: true,

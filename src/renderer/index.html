@@ -230,7 +230,13 @@
               </label>
               <label class="field">
                 <span>模型</span>
-                <input id="cfg-ollama-model" class="input" type="text" placeholder="qwen2.5:7b" />
+                <div class="field-with-btn">
+                  <select id="cfg-ollama-model" class="input select"></select>
+                  <button id="scan-ollama" class="btn btn-secondary btn-sm" type="button">检测本机模型</button>
+                </div>
+                <p id="scan-ollama-hint" class="hint-text">
+                  留空则自动挑选本机已安装的对话模型
+                </p>
               </label>
               <div class="field-row">
                 <label class="field">
@@ -242,6 +248,10 @@
                   <input id="cfg-ollama-budget" class="input" type="number" step="500" min="2000" />
                 </label>
               </div>
+              <label class="checkbox-field">
+                <input id="cfg-ollama-nothink" type="checkbox" />
+                <span>关闭思维链（qwen3 / deepseek-r1 等推理模型建议开启）</span>
+              </label>
             </div>
 
             <div id="cfg-bilibili" class="provider-fields hidden">
@@ -283,17 +293,39 @@
             </div>
 
             <div id="cfg-asr-whisper" class="provider-fields hidden">
+              <div class="install-box">
+                <p class="hint-text">
+                  一键安装会从 GitHub 下载 whisper.cpp 预编译程序，并从 HuggingFace
+                  下载模型，全程无需配置。
+                </p>
+                <div class="field-with-btn">
+                  <select id="cfg-whisper-model-size" class="input select">
+                    <option value="tiny">tiny · 75MB · 最快，质量最差</option>
+                    <option value="base">base · 141MB · 偏快，中文勉强</option>
+                    <option value="small" selected>small · 466MB · 推荐，中文可用</option>
+                    <option value="medium">medium · 1.5GB · 较慢，质量好</option>
+                    <option value="large-v3-turbo">large-v3-turbo · 1.6GB · 最慢，质量最好</option>
+                  </select>
+                  <button id="install-whisper" class="btn btn-secondary btn-sm" type="button">
+                    一键安装
+                  </button>
+                </div>
+                <div id="whisper-progress" class="install-progress hidden">
+                  <div class="progress-bar"><div id="whisper-progress-fill" class="progress-fill"></div></div>
+                  <span id="whisper-progress-text" class="progress-detail"></span>
+                </div>
+              </div>
               <label class="field">
                 <span>whisper 可执行文件</span>
                 <div class="field-with-btn">
-                  <input id="cfg-whisper-bin" class="input" type="text" placeholder="C:\\whisper\\whisper-cli.exe" />
+                  <input id="cfg-whisper-bin" class="input" type="text" placeholder="安装后自动填入" />
                   <button id="pick-whisper-bin" class="btn btn-ghost btn-sm" type="button">浏览</button>
                 </div>
               </label>
               <label class="field">
                 <span>模型文件 (ggml-*.bin)</span>
                 <div class="field-with-btn">
-                  <input id="cfg-whisper-model" class="input" type="text" placeholder="C:\\whisper\\ggml-large-v3-turbo.bin" />
+                  <input id="cfg-whisper-model" class="input" type="text" placeholder="安装后自动填入" />
                   <button id="pick-whisper-model" class="btn btn-ghost btn-sm" type="button">浏览</button>
                 </div>
               </label>

@@ -44,13 +44,71 @@ npm run dist:linux   # Linux AppImage
 
 ---
 
+## 三步就能跑起来
+
+本工具可以**完全离线**使用，不需要任何云端账号。
+
+### 1. 摘要模型：接本机 Ollama
+
+如果你装了 [Ollama](https://ollama.com)，什么都不用配：
+
+```bash
+ollama serve                  # 启动服务
+ollama pull qwen3:8b          # 拉一个对话模型
+```
+
+然后在「设置 → 摘要模型」里选 **Ollama 本地模型**，点「检测本机模型」，
+下拉框会列出你装的模型。**留空即自动挑选**——应用会排除嵌入类模型
+（`all-minilm`、`bge-*`），并在体积与效果之间取平衡。
+
+> 装了 `qwen3` / `deepseek-r1` / `gpt-oss` 这类推理模型时，请勾选
+> **关闭思维链**。否则模型会先输出大段 thinking，既慢又容易把输出预算耗光
+> 导致正文为空。
+
+### 2. 字幕：登录 B 站 或 一键装本地转写
+
+B 站大部分视频**没有官方字幕**，所以通常需要语音识别。
+
+- **有官方字幕**（少数）：在「设置 → B 站登录」登录即可自动获取。
+- **没有字幕**：在「设置 → 语音识别」选 **whisper.cpp 本地**，点 **一键安装**。
+
+  安装器会自己从 GitHub 拉 whisper.cpp 预编译程序、从 HuggingFace 拉模型，
+  **不需要你手动找文件、也不需要任何账号**。装完路径自动填好。
+
+  | 模型 | 体积 | 说明 |
+  | --- | --- | --- |
+  | tiny | 75 MB | 最快，质量最差 |
+  | base | 141 MB | 偏快，中文勉强 |
+  | small | 466 MB | **推荐**，中文可用 |
+  | medium | 1.5 GB | 较慢，质量好 |
+  | large-v3-turbo | 1.6 GB | 最慢，质量最好 |
+
+### 3. 粘贴链接，生成摘要
+
+填视频链接 → 「获取信息」→ 选分P → 「生成摘要」。
+
+### 也可以用云端模型
+
+「设置 → 摘要模型」选 **OpenAI 兼容接口**，填 Base URL / API Key / 模型名即可，
+支持 OpenAI、DeepSeek、Kimi、智谱、豆包、SiliconFlow、Groq、LM Studio、vLLM 等。
+点「测试连接」会校验地址、Key 与模型名。
+
+ASR 也支持 OpenAI 兼容接口（`/audio/transcriptions`），填同样的 Base URL 即可。
+
+---
+
 ## 配置
 
 点击右上角 **设置** 打开配置面板。
 
 ### 1. 选择摘要模型（三选一）
 
-#### OpenAI 兼容接口（推荐）
+#### Ollama 本地模型（推荐，零配置）
+
+Base URL 默认 `http://127.0.0.1:11434`。点「检测本机模型」会列出本机已装的模型，
+留空则自动挑选。
+
+#### OpenAI 兼容接口
 
 任何实现了 `/v1/chat/completions` 的服务都可以用，只要填对 `Base URL`：
 
@@ -68,18 +126,10 @@ npm run dist:linux   # Linux AppImage
 
 面板里的 **测试连接** 会调用 `/models` 校验地址、Key 和模型名。
 
-#### Ollama 本地模型
-
-```bash
-ollama pull qwen2.5:7b
-```
-
-Base URL 默认 `http://127.0.0.1:11434`，模型名填已拉取的模型。
-
 #### B 站官方 AI 总结
 
 不需要任何 API Key，直接用 B 站为该视频生成的结论。
-**限制**：并非所有视频都有，且需要登录。
+**限制**：并非所有视频都有（实测很多视频返回空），且需要登录。
 
 ### 2. 字幕来源与登录
 
@@ -96,8 +146,8 @@ B 站大多数字幕需要登录态才能拿到，所以：
 
 | 方案 | 说明 |
 | --- | --- |
+| **whisper.cpp 本地** | **推荐**。点「一键安装」即可，自动下载程序与模型，无需账号。 |
 | **OpenAI 兼容接口** | 任何实现 `/audio/transcriptions` 且支持 `verbose_json` 的服务：OpenAI、SiliconFlow、Groq、阿里云 DashScope 等。模型填 `whisper-1` / `whisper-large-v3` 等。 |
-| **whisper.cpp 本地** | 完全离线。填 `whisper-cli.exe` 路径与 `ggml-*.bin` 模型路径（都有「浏览」按钮可选）。 |
 
 音频下载与转码由内置的 `ffmpeg-static` 完成，无需单独安装 ffmpeg
 （也可以在设置里手动指定 ffmpeg 路径）。

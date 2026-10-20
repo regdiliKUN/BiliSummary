@@ -11,6 +11,8 @@ import { BilibiliClient } from '../core/bilibili/client.js';
 import { ConfigStore, defaultConfigPath, validateConfig } from '../core/config.js';
 import { createProvider } from '../core/providers/index.js';
 import { createAsrProvider } from '../core/asr/index.js';
+import { installWhisper, type WhisperModelSize } from '../core/asr/whisperInstall.js';
+import { OllamaProvider } from '../core/providers/ollama.js';
 import { runJob } from '../core/pipeline/job.js';
 import {
   APP_USER_MODEL_ID,
@@ -47,6 +49,9 @@ function abortAllJobs(): void {
   }
   runningJobs.clear();
 }
+
+/** 正在进行的 ASR 安装任务。 */
+let installAbort: AbortController | null = null;
 
 /** 向渲染进程发送消息，窗口已销毁时静默跳过。 */
 function sendToRenderer(channel: string, payload: unknown): void {
@@ -325,6 +330,63 @@ function registerIpc(): void {
     const asr = createAsrProvider(config.asrProvider, config);
     if (!asr) return { ok: false, message: '未配置 ASR' };
     return asr.healthCheck();
+  });
+
+  // --- ASR 一键安装 ---
+  ipcMain.handle('asr:install', async (_e, model: WhisperModelSize) => {
+    const installDir = join(app.getPath('userData'), 'asr');
+    const controller = new AbortController();
+    installAbort = controller;
+
+    try {
+      const result = await installWhisper({
+        installDir,
+        model,
+        signal: controller.signal,
+        onProgress: (p) => {
+          sendToRenderer('asr:install:progress', p);
+        },
+      });
+
+      // 装完直接写进配置，用户不用手动填路径
+      if (result.ok && result.binaryPath && result.modelPath) {
+        const config = getConfig();
+        getConfigStore().patch({
+          asrProvider: 'whisper-cpp',
+          whisperCpp: {
+            ...config.whisperCpp,
+            binaryPath: result.binaryPath,
+            modelPath: result.modelPath,
+          },
+        });
+      }
+      return result;
+    } catch (err) {
+      return { ok: false, message: `安装失败：${(err as Error).message}` };
+    } finally {
+      installAbort = null;
+    }
+  });
+
+  ipcMain.handle('asr:cancelInstall', () => {
+    installAbort?.abort();
+    installAbort = null;
+    return { ok: true };
+  });
+
+  // --- Ollama 模型列表 ---
+  ipcMain.handle('ollama:listModels', async (_e, baseUrl?: string) => {
+    const config = getConfig();
+    const provider = new OllamaProvider({
+      ...config.ollama,
+      baseUrl: baseUrl || config.ollama.baseUrl,
+    });
+    try {
+      const models = await provider.listModels();
+      return { ok: true, models };
+    } catch (err) {
+      return { ok: false, models: [], message: (err as Error).message };
+    }
   });
 
   // --- 导出 ---

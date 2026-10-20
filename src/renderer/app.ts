@@ -536,9 +536,10 @@ function setupSettingsForm(cfg: AppConfig): void {
   ($<HTMLInputElement>('cfg-openai-budget')).value = String(cfg.openai.contextChars);
 
   ($<HTMLInputElement>('cfg-ollama-base')).value = cfg.ollama.baseUrl;
-  ($<HTMLInputElement>('cfg-ollama-model')).value = cfg.ollama.model;
+  setOllamaModelOptions(cfg.ollama.model);
   ($<HTMLInputElement>('cfg-ollama-temp')).value = String(cfg.ollama.temperature);
   ($<HTMLInputElement>('cfg-ollama-budget')).value = String(cfg.ollama.contextChars);
+  ($<HTMLInputElement>('cfg-ollama-nothink')).checked = cfg.ollama.disableThinking !== false;
 
   ($<HTMLSelectElement>('cfg-asr-provider')).value = cfg.asrProvider;
   ($<HTMLInputElement>('cfg-asr-base')).value = cfg.openaiAsr.baseUrl;
@@ -594,10 +595,11 @@ async function handleSaveSettings(): Promise<void> {
     },
     ollama: {
       baseUrl: $<HTMLInputElement>('cfg-ollama-base').value.trim(),
-      model: $<HTMLInputElement>('cfg-ollama-model').value.trim(),
+      model: $<HTMLSelectElement>('cfg-ollama-model').value,
       temperature: Number($<HTMLInputElement>('cfg-ollama-temp').value) || 0.3,
       maxTokens: config?.ollama.maxTokens ?? 4096,
       contextChars: Number($<HTMLInputElement>('cfg-ollama-budget').value) || 8000,
+      disableThinking: $<HTMLInputElement>('cfg-ollama-nothink').checked,
     },
     asrProvider: $<HTMLSelectElement>('cfg-asr-provider').value as AppConfig['asrProvider'],
     openaiAsr: {
@@ -658,6 +660,16 @@ document.addEventListener('DOMContentLoaded', () => {
   $<HTMLButtonElement>('pick-ffmpeg').addEventListener('click', () => void pickPath('cfg-ffmpeg', 'binary'));
   el.createShortcut.addEventListener('click', () => void handleCreateShortcut());
   el.removeShortcut.addEventListener('click', () => void handleRemoveShortcut());
+  $<HTMLButtonElement>('scan-ollama').addEventListener('click', () => void scanOllamaModels());
+  $<HTMLButtonElement>('install-whisper').addEventListener('click', () => void installWhisper());
+
+  // whisper 安装进度
+  api.onAsrInstallProgress((p) => {
+    const fill = document.getElementById('whisper-progress-fill');
+    const text = document.getElementById('whisper-progress-text');
+    if (fill) fill.style.width = `${Math.max(0, Math.min(100, p.percent))}%`;
+    if (text) text.textContent = p.message;
+  });
   $<HTMLButtonElement>('cfg-login-btn').addEventListener('click', () => void handleLogin());
   $<HTMLButtonElement>('cfg-logout-btn').addEventListener('click', async () => {
     await api.logout();
@@ -711,9 +723,111 @@ async function pickPath(
 }
 
 /* ------------------------------------------------------------------ */
-/* 桌面快捷方式                                                        */
+/* Ollama 模型检测                                                      */
 /* ------------------------------------------------------------------ */
 
+/** 填充 Ollama 模型下拉框。 */
+function setOllamaModelOptions(current: string, models: string[] = []): void {
+  const select = $<HTMLSelectElement>('cfg-ollama-model');
+  select.innerHTML = '';
+
+  const auto = document.createElement('option');
+  auto.value = '';
+  auto.textContent = '自动选择（推荐）';
+  select.appendChild(auto);
+
+  for (const model of models) {
+    const option = document.createElement('option');
+    option.value = model;
+    option.textContent = model;
+    select.appendChild(option);
+  }
+
+  // 配置里的模型即使没扫到也要能选回来
+  if (current && !models.includes(current)) {
+    const option = document.createElement('option');
+    option.value = current;
+    option.textContent = `${current}（未在本机检测到）`;
+    select.appendChild(option);
+  }
+
+  select.value = current;
+}
+
+/** 检测本机 Ollama 已安装的模型。 */
+async function scanOllamaModels(): Promise<void> {
+  const hint = $('scan-ollama-hint');
+  const btn = $<HTMLButtonElement>('scan-ollama');
+  const baseUrl = $<HTMLInputElement>('cfg-ollama-base').value.trim();
+  const current = $<HTMLSelectElement>('cfg-ollama-model').value;
+
+  btn.disabled = true;
+  hint.textContent = '正在连接 Ollama…';
+  try {
+    const res = await api.listOllamaModels(baseUrl);
+    if (!res.ok) {
+      hint.textContent = res.message || '连接失败';
+      showToast(res.message || '连接 Ollama 失败', 'error');
+      return;
+    }
+    setOllamaModelOptions(current, res.models);
+    const chatModels = res.models.filter((m) => !/embed|minilm|bge-/i.test(m));
+    hint.textContent = res.models.length
+      ? `检测到 ${res.models.length} 个模型（可用于摘要：${chatModels.length} 个）。留空则自动挑选。`
+      : 'Ollama 已连接但没有已下载的模型，请先执行 ollama pull qwen3:8b';
+    if (chatModels.length) {
+      showToast(`检测到 ${chatModels.length} 个可用模型`, 'ok');
+    }
+  } catch (err) {
+    hint.textContent = `检测失败：${(err as Error).message}`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* whisper.cpp 一键安装                                                 */
+/* ------------------------------------------------------------------ */
+
+async function installWhisper(): Promise<void> {
+  const btn = $<HTMLButtonElement>('install-whisper');
+  const size = $<HTMLSelectElement>('cfg-whisper-model-size').value;
+  const box = $('whisper-progress');
+  const fill = $('whisper-progress-fill');
+  const text = $('whisper-progress-text');
+
+  btn.disabled = true;
+  box.classList.remove('hidden');
+  fill.style.width = '0%';
+  text.textContent = '准备下载…';
+
+  try {
+    const res = await api.installAsr(size);
+    if (res.ok) {
+      text.textContent = res.message;
+      fill.style.width = '100%';
+      showToast('安装完成', 'ok');
+      // 刷新配置里的路径显示
+      const cfg = await api.getConfig();
+      $<HTMLInputElement>('cfg-whisper-bin').value = cfg.whisperCpp.binaryPath;
+      $<HTMLInputElement>('cfg-whisper-model').value = cfg.whisperCpp.modelPath;
+      $<HTMLSelectElement>('cfg-asr-provider').value = cfg.asrProvider;
+      updateAsrFields();
+    } else {
+      text.textContent = res.message;
+      showToast(res.message, 'error');
+    }
+  } catch (err) {
+    text.textContent = `安装失败：${(err as Error).message}`;
+    showToast('安装失败', 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* 桌面快捷方式                                                        */
+/* ------------------------------------------------------------------ */
 /** 只更新按钮的可用状态，不动状态文案。 */
 async function updateShortcutButtons(): Promise<void> {
   try {
@@ -726,8 +840,7 @@ async function updateShortcutButtons(): Promise<void> {
 }
 
 /** 刷新桌面快捷方式状态并更新界面。 */
-async function refreshShortcutState(): Promise<void> {
-  try {
+async function refreshShortcutState(): Promise<void> {  try {
     const state = await api.getShortcutState();
     if (!state.supported) {
       el.shortcutStatus.textContent = state.message;

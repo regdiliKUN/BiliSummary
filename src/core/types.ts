@@ -27,6 +27,12 @@ export interface OllamaProviderConfig {
   temperature: number;
   maxTokens: number;
   contextChars: number;
+  /**
+   * 关闭模型的思维链输出。
+   * qwen3 / deepseek-r1 / gpt-oss 这类推理模型默认会先输出 thinking，
+   * 既慢又容易把 num_predict 预算耗光导致正文为空。做结构化摘要时应关闭。
+   */
+  disableThinking: boolean;
 }
 
 export interface BilibiliProviderConfig {
