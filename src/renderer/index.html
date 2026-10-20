@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data: https:;"
+    />
+    <title>BiliSummary - B站视频总结工具</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <!-- 顶栏 -->
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-logo">BS</span>
+          <div>
+            <h1>BiliSummary</h1>
+            <p class="brand-sub">B站视频总结工具</p>
+          </div>
+        </div>
+        <div class="topbar-actions">
+          <button id="login-status" class="btn btn-ghost" type="button">
+            <span class="dot"></span><span id="login-text">未登录</span>
+          </button>
+          <button id="open-settings" class="btn btn-ghost" type="button">设置</button>
+        </div>
+      </header>
+
+      <main class="content">
+        <!-- 输入区 -->
+        <section class="card">
+          <div class="card-head">
+            <h2>视频链接</h2>
+          </div>
+          <div class="row">
+            <input
+              id="url-input"
+              class="input"
+              type="text"
+              placeholder="粘贴 B 站视频链接或 BV 号，例如 https://www.bilibili.com/video/BV1xx411c7mD"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <button id="fetch-info" class="btn btn-secondary" type="button">获取信息</button>
+          </div>
+
+          <div id="video-card" class="video-card hidden">
+            <img id="video-cover" class="cover" alt="" />
+            <div class="video-meta">
+              <a id="video-title" class="video-title" href="#" target="_blank"></a>
+              <div id="video-stats" class="video-stats"></div>
+              <div class="video-controls">
+                <label class="field">
+                  <span>分P</span>
+                  <select id="part-select" class="input select"></select>
+                </label>
+                <label class="field">
+                  <span>摘要来源</span>
+                  <select id="source-select" class="input select">
+                    <option value="auto">自动（字幕优先）</option>
+                    <option value="subtitle">仅官方字幕</option>
+                    <option value="asr">仅语音识别</option>
+                    <option value="bilibili-ai">仅B站官方总结</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>模型来源</span>
+                  <select id="provider-select" class="input select"></select>
+                </label>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 进度区 -->
+        <section id="progress-card" class="card hidden">
+          <div class="card-head">
+            <h2>生成进度</h2>
+            <button id="cancel-job" class="btn btn-ghost btn-sm" type="button">取消</button>
+          </div>
+          <div class="progress-wrap">
+            <div class="progress-bar"><div id="progress-fill" class="progress-fill"></div></div>
+            <span id="progress-percent" class="progress-percent">0%</span>
+          </div>
+          <p id="progress-message" class="progress-message"></p>
+          <p id="progress-detail" class="progress-detail"></p>
+        </section>
+
+        <!-- 错误 -->
+        <section id="error-card" class="card card-error hidden">
+          <div class="card-head"><h2>出错了</h2></div>
+          <p id="error-message" class="error-message"></p>
+          <p id="error-hint" class="error-hint"></p>
+        </section>
+
+        <!-- 结果 -->
+        <section id="result-card" class="card hidden">
+          <div class="card-head">
+            <h2>摘要结果</h2>
+            <div class="head-actions">
+              <button id="copy-md" class="btn btn-ghost btn-sm" type="button">复制 Markdown</button>
+              <button id="save-md" class="btn btn-ghost btn-sm" type="button">保存</button>
+              <button id="export-transcript" class="btn btn-ghost btn-sm" type="button">导出字幕</button>
+            </div>
+          </div>
+
+          <div class="tabs">
+            <button class="tab active" data-tab="summary" type="button">摘要</button>
+            <button class="tab" data-tab="markdown" type="button">Markdown</button>
+            <button class="tab" data-tab="transcript" type="button">字幕</button>
+          </div>
+
+          <div id="tab-summary" class="tab-panel active">
+            <div class="summary-block">
+              <h3>一句话总结</h3>
+              <p id="summary-tldr" class="tldr"></p>
+            </div>
+            <div class="summary-block">
+              <h3>关键要点</h3>
+              <ul id="summary-points" class="points"></ul>
+            </div>
+            <div class="summary-block">
+              <h3>章节速览</h3>
+              <ul id="summary-outline" class="outline"></ul>
+            </div>
+            <div class="summary-block">
+              <h3>分段摘要</h3>
+              <div id="summary-segments" class="segments"></div>
+            </div>
+            <div id="insights-block" class="summary-block hidden">
+              <h3>关键洞察</h3>
+              <ul id="summary-insights" class="points"></ul>
+            </div>
+            <p id="summary-meta" class="summary-meta"></p>
+          </div>
+
+          <div id="tab-markdown" class="tab-panel">
+            <pre id="markdown-view" class="markdown-view"></pre>
+          </div>
+
+          <div id="tab-transcript" class="tab-panel">
+            <div id="transcript-view" class="transcript"></div>
+          </div>
+        </section>
+
+        <!-- 空闲提示 -->
+        <section id="empty-card" class="card empty-card">
+          <h2>开始使用</h2>
+          <ol class="steps">
+            <li>在上方粘贴 B 站视频链接</li>
+            <li>点击「获取信息」确认视频与分P</li>
+            <li>选择摘要来源，点击「生成摘要」</li>
+          </ol>
+          <p class="tip">
+            提示：在「设置」里登录 B 站可以获取官方字幕（准确率最高）；没有字幕时可配置
+            ASR（OpenAI 兼容接口或 whisper.cpp）自动转写。
+          </p>
+        </section>
+      </main>
+
+      <!-- 生成按钮 -->
+      <div class="action-bar">
+        <button id="start-job" class="btn btn-primary btn-lg" type="button" disabled>
+          生成摘要
+        </button>
+        <span id="action-hint" class="action-hint">请先获取视频信息</span>
+      </div>
+    </div>
+
+    <!-- 设置弹窗 -->
+    <div id="settings-modal" class="modal hidden">
+      <div class="modal-backdrop" data-close></div>
+      <div class="modal-body">
+        <div class="modal-head">
+          <h2>设置</h2>
+          <button id="close-settings" class="btn btn-ghost btn-sm" type="button">关闭</button>
+        </div>
+
+        <div class="modal-content">
+          <div class="setting-group">
+            <h3>摘要模型</h3>
+            <div class="setting-row">
+              <label class="field grow">
+                <span>供应商</span>
+                <select id="cfg-llm-provider" class="input select">
+                  <option value="openai">OpenAI 兼容接口</option>
+                  <option value="ollama">Ollama 本地模型</option>
+                  <option value="bilibili">B站官方 AI 总结</option>
+                </select>
+              </label>
+              <button id="test-llm" class="btn btn-secondary btn-sm" type="button">测试连接</button>
+            </div>
+            <p id="test-llm-result" class="test-result"></p>
+
+            <div id="cfg-openai" class="provider-fields">
+              <label class="field">
+                <span>Base URL</span>
+                <input id="cfg-openai-base" class="input" type="text" placeholder="https://api.deepseek.com/v1" />
+              </label>
+              <label class="field">
+                <span>API Key</span>
+                <input id="cfg-openai-key" class="input" type="password" placeholder="sk-..." />
+              </label>
+              <label class="field">
+                <span>模型</span>
+                <input id="cfg-openai-model" class="input" type="text" placeholder="deepseek-chat" />
+              </label>
+              <div class="field-row">
+                <label class="field">
+                  <span>温度</span>
+                  <input id="cfg-openai-temp" class="input" type="number" step="0.1" min="0" max="2" />
+                </label>
+                <label class="field">
+                  <span>单块字符预算</span>
+                  <input id="cfg-openai-budget" class="input" type="number" step="500" min="2000" />
+                </label>
+              </div>
+            </div>
+
+            <div id="cfg-ollama" class="provider-fields hidden">
+              <label class="field">
+                <span>Base URL</span>
+                <input id="cfg-ollama-base" class="input" type="text" placeholder="http://127.0.0.1:11434" />
+              </label>
+              <label class="field">
+                <span>模型</span>
+                <input id="cfg-ollama-model" class="input" type="text" placeholder="qwen2.5:7b" />
+              </label>
+              <div class="field-row">
+                <label class="field">
+                  <span>温度</span>
+                  <input id="cfg-ollama-temp" class="input" type="number" step="0.1" min="0" max="2" />
+                </label>
+                <label class="field">
+                  <span>单块字符预算</span>
+                  <input id="cfg-ollama-budget" class="input" type="number" step="500" min="2000" />
+                </label>
+              </div>
+            </div>
+
+            <div id="cfg-bilibili" class="provider-fields hidden">
+              <p class="hint-text">
+                使用 B 站为该视频生成的官方 AI 总结。无需 API Key，但并非所有视频都有，
+                且内容不可定制。
+              </p>
+            </div>
+          </div>
+
+          <div class="setting-group">
+            <h3>语音识别（ASR 备选方案）</h3>
+            <div class="setting-row">
+              <label class="field grow">
+                <span>方案</span>
+                <select id="cfg-asr-provider" class="input select">
+                  <option value="none">不使用</option>
+                  <option value="openai">OpenAI 兼容接口</option>
+                  <option value="whisper-cpp">whisper.cpp 本地</option>
+                </select>
+              </label>
+              <button id="test-asr" class="btn btn-secondary btn-sm" type="button">测试连接</button>
+            </div>
+            <p id="test-asr-result" class="test-result"></p>
+
+            <div id="cfg-asr-openai" class="provider-fields hidden">
+              <label class="field">
+                <span>Base URL</span>
+                <input id="cfg-asr-base" class="input" type="text" placeholder="https://api.openai.com/v1" />
+              </label>
+              <label class="field">
+                <span>API Key</span>
+                <input id="cfg-asr-key" class="input" type="password" />
+              </label>
+              <label class="field">
+                <span>模型</span>
+                <input id="cfg-asr-model" class="input" type="text" placeholder="whisper-1" />
+              </label>
+            </div>
+
+            <div id="cfg-asr-whisper" class="provider-fields hidden">
+              <label class="field">
+                <span>whisper 可执行文件</span>
+                <input id="cfg-whisper-bin" class="input" type="text" placeholder="C:\\whisper\\whisper-cli.exe" />
+              </label>
+              <label class="field">
+                <span>模型文件 (ggml-*.bin)</span>
+                <input id="cfg-whisper-model" class="input" type="text" placeholder="C:\\whisper\\ggml-large-v3-turbo.bin" />
+              </label>
+              <label class="field">
+                <span>ffmpeg 路径（留空则用内置）</span>
+                <input id="cfg-ffmpeg" class="input" type="text" placeholder="留空自动检测" />
+              </label>
+            </div>
+          </div>
+
+          <div class="setting-group">
+            <h3>B 站登录</h3>
+            <div class="setting-row">
+              <button id="cfg-login-btn" class="btn btn-secondary btn-sm" type="button">打开登录窗口</button>
+              <button id="cfg-logout-btn" class="btn btn-ghost btn-sm" type="button">退出登录</button>
+            </div>
+            <label class="field">
+              <span>或手动粘贴 Cookie（SESSDATA）</span>
+              <textarea id="cfg-cookie" class="input textarea" rows="3" placeholder="SESSDATA=...; bili_jct=...; DedeUserID=..."></textarea>
+            </label>
+          </div>
+
+          <div class="setting-group">
+            <h3>其它</h3>
+            <label class="field">
+              <span>摘要语言</span>
+              <input id="cfg-language" class="input" type="text" placeholder="zh" />
+            </label>
+            <label class="field">
+              <span>并发请求数</span>
+              <input id="cfg-concurrency" class="input" type="number" min="1" max="8" step="1" />
+            </label>
+            <label class="checkbox-field">
+              <input id="cfg-use-danmaku" type="checkbox" />
+              <span>抓取弹幕并附在摘要里</span>
+            </label>
+            <label class="checkbox-field">
+              <input id="cfg-export-transcript" type="checkbox" />
+              <span>在摘要中附带字幕全文</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="modal-foot">
+          <p id="settings-status" class="settings-status"></p>
+          <button id="save-settings" class="btn btn-primary" type="button">保存设置</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="toast" class="toast hidden"></div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

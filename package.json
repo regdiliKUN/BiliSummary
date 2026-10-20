@@ -1,0 +1,41 @@
+{
+  "name": "bili-summary",
+  "productName": "BiliSummary",
+  "version": "0.1.0",
+  "description": "B站视频总结工具 — 获取视频字幕/音频，调用可切换的 LLM 生成带时间戳的结构化摘要",
+  "main": "dist/main/main.js",
+  "author": "BiliSummary",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "node scripts/build.mjs",
+    "icon": "node scripts/makeIcon.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "probe": "esbuild scripts/probe.ts --bundle --platform=node --target=node20 --format=cjs --external:ffmpeg-static --outfile=dist/probe.cjs && node dist/probe.cjs",
+    "check:audio": "esbuild scripts/checkAudio.ts --bundle --platform=node --target=node20 --format=cjs --external:ffmpeg-static --outfile=dist/checkAudio.cjs && node dist/checkAudio.cjs",
+    "check:e2e": "esbuild scripts/e2e.ts --bundle --platform=node --target=node20 --format=cjs --external:ffmpeg-static --outfile=dist/e2e.cjs && node dist/e2e.cjs",
+    "dist": "npm run icon && npm run build && electron-builder",
+    "dist:win": "npm run icon && npm run build && electron-builder --win",
+    "dist:mac": "npm run icon && npm run build && electron-builder --mac",
+    "dist:linux": "npm run icon && npm run build && electron-builder --linux"
+  },
+  "dependencies": {
+    "ffmpeg-static": "^5.2.0"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "allowScripts": {
+    "electron@33.4.11": true,
+    "esbuild@0.24.2": true,
+    "esbuild@0.21.5": true,
+    "ffmpeg-static@5.3.0": true
+  }
+}

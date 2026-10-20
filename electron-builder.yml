@@ -1,0 +1,50 @@
+appId: com.bilisummary.app
+productName: BiliSummary
+copyright: Copyright © 2026 BiliSummary
+
+directories:
+  output: release
+  buildResources: resources
+
+# ffmpeg-static 是二进制，必须解包到 asar 外面才能执行
+asarUnpack:
+  - node_modules/ffmpeg-static/**
+
+files:
+  - dist/**/*
+  - package.json
+  - node_modules/ffmpeg-static/**/*
+
+win:
+  icon: resources/icon.ico
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: BiliSummary
+  artifactName: ${productName}-${version}-${arch}-setup.${ext}
+
+portable:
+  artifactName: ${productName}-${version}-${arch}-portable.${ext}
+
+mac:
+  icon: resources/icon.png
+  target:
+    - target: dmg
+      arch: [x64, arm64]
+  category: public.app-category.productivity
+
+linux:
+  icon: resources/icon.png
+  target:
+    - target: AppImage
+      arch: [x64]
+  category: Utility
