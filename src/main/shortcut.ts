@@ -10,22 +10,30 @@
  */
 import { app, shell } from 'electron';
 import { execFile, execFileSync } from 'node:child_process';
-import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync, chmodSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
-import { promisify } from 'node:util';
 import {
   linuxDesktopEntry as buildLinuxDesktopEntry,
   parseLinuxExec,
   resolveMacBundle as resolveMacBundlePure,
   shortcutPath as shortcutPathPure,
   type LaunchTarget,
-} from '../core/shortcut.js';import type {
+} from '../core/shortcut.js';
+import type {
   ShortcutPlatform,
   ShortcutResult,
   ShortcutState,
 } from '../core/types.js';
-
-const execFileAsync = promisify(execFile);
 
 /** 与 electron-builder.yml 的 appId 保持一致，用于 Windows 任务栏分组。 */
 export const APP_USER_MODEL_ID = 'com.bilisummary.app';
@@ -203,42 +211,79 @@ export function getShortcutState(): ShortcutState {
 /* Windows                                                             */
 /* ------------------------------------------------------------------ */
 
+/** PowerShell 单引号字符串的转义。 */
+function psQuote(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+/**
+ * 以 -EncodedCommand 的方式执行 PowerShell 脚本。
+ *
+ * 不能用 `-Command <script> <arg>`：PowerShell 会把后面的参数直接拼到脚本末尾，
+ * 而不是放进 $args。改用 Base64(UTF-16LE) 编码并把参数直接写进脚本里。
+ */
+function runPowerShell(script: string, timeout = 20000): Promise<void> {
+  const encoded = Buffer.from(script, 'utf16le').toString('base64');
+  return new Promise((resolve, reject) => {
+    execFile(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-EncodedCommand',
+        encoded,
+      ],
+      { windowsHide: true, timeout },
+      (err) => (err ? reject(err) : resolve()),
+    );
+  });
+}
+
+/**
+ * 通知资源管理器刷新。
+ *
+ * 通过文件系统 API 新建的文件不会触发 Explorer 的变更通知，
+ * 桌面图标可能要按 F5 才出现。这里主动发一条通知让图标立刻显示。
+ */
+async function notifyShellChange(path: string): Promise<void> {
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    "Add-Type -Namespace Native -Name Shell -MemberDefinition @'",
+    '[DllImport("shell32.dll", CharSet=CharSet.Auto, SetLastError=true)]',
+    'public static extern void SHChangeNotify(int eventId, uint flags, string item1, IntPtr item2);',
+    "'@",
+    // SHCNE_CREATE = 0x00000002
+    `[Native.Shell]::SHChangeNotify(0x00000002, 0x0000, ${psQuote(path)}, [IntPtr]::Zero)`,
+  ].join('\n');
+
+  try {
+    await runPowerShell(script, 10000);
+  } catch {
+    // 刷新失败不影响快捷方式本身
+  }
+}
+
 /** 用 PowerShell 的 WScript.Shell 创建快捷方式（回退方案）。 */
 async function writeWindowsShortcutFallback(
   path: string,
   launch: LaunchTarget,
 ): Promise<void> {
-  const ps = [
+  const script = [
     '$ErrorActionPreference = "Stop"',
     '$shell = New-Object -ComObject WScript.Shell',
-    '$sc = $shell.CreateShortcut([Environment]::ExpandEnvironmentVariables($args[0]))',
-    `$sc.TargetPath = $args[1]`,
-    `$sc.Arguments = $args[2]`,
-    `$sc.WorkingDirectory = $args[3]`,
-    `$sc.Description = $args[4]`,
-    `if ($args[5]) { $sc.IconLocation = "$($args[5]),$($args[6])" }`,
+    '$sc = $shell.CreateShortcut(' + psQuote(path) + ')',
+    '$sc.TargetPath = ' + psQuote(launch.target),
+    '$sc.Arguments = ' + psQuote(launch.args),
+    '$sc.WorkingDirectory = ' + psQuote(launch.cwd),
+    '$sc.Description = ' + psQuote(`${getShortcutName()} - B站视频总结工具`),
+    'if (' + psQuote(launch.icon ?? '') + ') { $sc.IconLocation = ' +
+      psQuote(launch.icon ?? '') + ' + "," + ' + psQuote(String(launch.iconIndex ?? 0)) + ' }',
     '$sc.Save()',
   ].join('; ');
 
-  await execFileAsync(
-    'powershell.exe',
-    [
-      '-NoProfile',
-      '-NonInteractive',
-      '-ExecutionPolicy',
-      'Bypass',
-      '-Command',
-      ps,
-      path,
-      launch.target,
-      launch.args,
-      launch.cwd,
-      `${getShortcutName()} - B站视频总结工具`,
-      launch.icon ?? '',
-      String(launch.iconIndex ?? 0),
-    ],
-    { windowsHide: true, timeout: 20000 },
-  );
+  await runPowerShell(script, 20000);
 }
 
 /* ------------------------------------------------------------------ */
@@ -387,6 +432,11 @@ export async function createDesktopShortcut(): Promise<ShortcutResult> {
       action: 'failed',
       message: '创建快捷方式后未在预期位置找到文件，请重试。',
     };
+  }
+
+  // 让桌面立刻显示新图标（不必手动 F5）
+  if (platform === 'win32') {
+    await notifyShellChange(path);
   }
 
   return {
