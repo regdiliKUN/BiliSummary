@@ -24,6 +24,9 @@ export class WhisperCppProvider implements AsrProvider {
   }
 
   async transcribe(audioPath: string, opts: { signal?: AbortSignal } = {}): Promise<AsrResult> {
+    // 请求发出前就已被取消
+    if (opts.signal?.aborted) throw new Error('转写已取消');
+
     const outBase = join(dirname(audioPath), 'whisper-out');
     const args = [
       '-m',
@@ -42,10 +45,39 @@ export class WhisperCppProvider implements AsrProvider {
       const proc = spawn(this.cfg.binaryPath, args, { windowsHide: true });
       let stderr = '';
       let stdout = '';
+      let settled = false;
+
+      const kill = () => {
+        // Windows 下 kill 只终止主进程，需要连同子进程一起结束
+        try {
+          if (process.platform === 'win32' && proc.pid) {
+            spawn('taskkill', ['/pid', String(proc.pid), '/T', '/F'], { windowsHide: true });
+          } else {
+            proc.kill('SIGKILL');
+          }
+        } catch {
+          proc.kill();
+        }
+      };
+
+      const finish = (err?: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        opts.signal?.removeEventListener('abort', onAbort);
+        if (err) reject(err);
+        else resolve();
+      };
+
+      // 超时兜底：whisper 卡死时不能让任务永远挂起
+      const timer = setTimeout(() => {
+        kill();
+        finish(new Error(`whisper 转写超时（${Math.round(this.timeout / 60000)} 分钟）`));
+      }, this.timeout);
 
       const onAbort = () => {
-        proc.kill();
-        reject(new Error('转写已取消'));
+        kill();
+        finish(new Error('转写已取消'));
       };
       opts.signal?.addEventListener('abort', onAbort, { once: true });
 
@@ -59,14 +91,12 @@ export class WhisperCppProvider implements AsrProvider {
       });
 
       proc.on('error', (err) => {
-        opts.signal?.removeEventListener('abort', onAbort);
-        reject(new Error(`无法启动 whisper：${err.message}`));
+        finish(new Error(`无法启动 whisper：${err.message}`));
       });
 
       proc.on('close', (code) => {
-        opts.signal?.removeEventListener('abort', onAbort);
-        if (code === 0) resolve();
-        else reject(new Error(`whisper 退出码 ${code}：${stderr.slice(-500) || stdout.slice(-500)}`));
+        if (code === 0) finish();
+        else finish(new Error(`whisper 退出码 ${code}：${stderr.slice(-500) || stdout.slice(-500)}`));
       });
     });
 

@@ -70,6 +70,9 @@ export class OpenAiProvider implements LlmProvider {
   }
 
   private async doRequest(body: Record<string, unknown>, signal?: AbortSignal): Promise<ChatResponse> {
+    // 请求发出前就已被取消：AbortSignal 不会为后注册的监听者补发 abort 事件
+    if (signal?.aborted) throw new Error('请求已取消');
+
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeout);
     const onAbort = () => controller.abort();

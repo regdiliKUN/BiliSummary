@@ -20,7 +20,7 @@ export function createProvider(
     case 'ollama':
       return new OllamaProvider(config.ollama);
     case 'bilibili':
-      return new BilibiliBuiltinProvider(client);
+      return new BilibiliBuiltinProvider(client, config.bilibili);
     case 'openai':
     default:
       return new OpenAiProvider(config.openai);

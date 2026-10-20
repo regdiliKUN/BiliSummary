@@ -7,6 +7,7 @@
  */
 import { BilibiliClient } from '../bilibili/client.js';
 import type {
+  AppConfig,
   ChatRequest,
   ChatResponse,
   LlmProvider,
@@ -26,10 +27,12 @@ export class BilibiliBuiltinProvider implements DirectSummaryProvider {
   readonly name = 'B站官方AI总结';
 
   private readonly client: BilibiliClient;
+  private readonly cfg: AppConfig['bilibili'];
   private ctx: ProviderContext = {};
 
-  constructor(client: BilibiliClient) {
+  constructor(client: BilibiliClient, cfg: AppConfig['bilibili'] = { useOutlineAsTitles: true }) {
     this.client = client;
+    this.cfg = cfg;
   }
 
   bind(ctx: ProviderContext): void {
@@ -56,7 +59,8 @@ export class BilibiliBuiltinProvider implements DirectSummaryProvider {
         end: Math.max(end, item.start),
         title: item.title,
         points: [],
-        summary: '',
+        // 官方结论只给标题，正文统一放在 summary 里
+        summary: this.cfg.useOutlineAsTitles ? '' : item.title,
       };
     });
 
@@ -66,6 +70,7 @@ export class BilibiliBuiltinProvider implements DirectSummaryProvider {
       segments,
       outline: conclusion.outline.map((o) => ({ start: o.start, title: o.title })),
       insights: [],
+      warnings: [],
       model: 'B站官方AI总结',
       provider: 'bilibili',
       transcriptSource: 'bilibili-ai',

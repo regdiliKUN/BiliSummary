@@ -43,6 +43,15 @@ export function renderMarkdown(params: {
     lines.push('');
   }
 
+  if (summary.warnings?.length) {
+    lines.push('## ⚠️ 注意');
+    lines.push('');
+    for (const warning of summary.warnings) {
+      lines.push(`- ${warning}`);
+    }
+    lines.push('');
+  }
+
   if (summary.tldr) {
     lines.push('## 一句话总结');
     lines.push('');

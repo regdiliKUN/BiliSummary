@@ -4,9 +4,8 @@
  * 负责：窗口管理、配置读写、B 站登录窗口、任务调度、文件导出。
  */
 import { app, BrowserWindow, dialog, ipcMain, shell, session } from 'electron';
-import { existsSync, writeFileSync } from 'node:fs';
+import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 
 import { BilibiliClient } from '../core/bilibili/client.js';
 import { ConfigStore, defaultConfigPath, validateConfig } from '../core/config.js';
@@ -30,6 +29,30 @@ let configStore: ConfigStore | null = null;
 
 /** 运行中的任务，用于取消。 */
 const runningJobs = new Map<string, AbortController>();
+
+/** 取消所有正在运行的任务。 */
+function abortAllJobs(): void {
+  for (const controller of runningJobs.values()) {
+    try {
+      controller.abort();
+    } catch {
+      /* 忽略 */
+    }
+  }
+  runningJobs.clear();
+}
+
+/** 向渲染进程发送消息，窗口已销毁时静默跳过。 */
+function sendToRenderer(channel: string, payload: unknown): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const contents = mainWindow.webContents;
+  if (contents.isDestroyed()) return;
+  try {
+    contents.send(channel, payload);
+  } catch {
+    /* 窗口可能在发送过程中被销毁 */
+  }
+}
 
 function getConfigStore(): ConfigStore {
   if (!configStore) {
@@ -66,6 +89,8 @@ function createMainWindow(): void {
   mainWindow.on('ready-to-show', () => mainWindow?.show());
   mainWindow.on('closed', () => {
     mainWindow = null;
+    // 窗口关掉后，正在跑的任务没有接收方，立即取消以免继续消耗网络与额度
+    abortAllJobs();
   });
 
   // 外部链接用系统浏览器打开
@@ -87,8 +112,10 @@ function createMainWindow(): void {
 /** 打开 B 站登录窗口。 */
 function openLoginWindow(): Promise<{ ok: boolean; message: string; cookie?: string }> {
   return new Promise((resolve) => {
+    // 窗口已存在：聚焦它并立即返回，否则调用方会一直挂起
     if (loginWindow && !loginWindow.isDestroyed()) {
       loginWindow.focus();
+      resolve({ ok: false, message: '登录窗口已打开，请在其中完成登录' });
       return;
     }
 
@@ -126,7 +153,7 @@ function openLoginWindow(): Promise<{ ok: boolean; message: string; cookie?: str
         const status = await client.checkLogin();
         if (status.ok) {
           getConfigStore().patch({ cookie: cookieStr });
-          mainWindow?.webContents.send('login:changed', { ok: true, user: status.user });
+          sendToRenderer('login:changed', { ok: true, user: status.user });
           finish({ ok: true, message: `登录成功：${status.user}`, cookie: cookieStr });
           return true;
         }
@@ -192,7 +219,7 @@ function registerIpc(): void {
     } catch {
       /* 忽略 */
     }
-    mainWindow?.webContents.send('login:changed', { ok: false, user: '' });
+    sendToRenderer('login:changed', { ok: false, user: '' });
     return { ok: true };
   });
 
@@ -227,15 +254,15 @@ function registerIpc(): void {
           jobId,
           signal: controller.signal,
           onProgress: (progress: JobProgress) => {
-            mainWindow?.webContents.send('job:progress', progress);
+            sendToRenderer('job:progress', progress);
           },
         });
-        mainWindow?.webContents.send('job:done', result);
+        sendToRenderer('job:done', result);
       } catch (err) {
         if (controller.signal.aborted) {
-          mainWindow?.webContents.send('job:cancelled', { jobId });
+          sendToRenderer('job:cancelled', { jobId });
         } else {
-          mainWindow?.webContents.send('job:failed', {
+          sendToRenderer('job:failed', {
             jobId,
             message: (err as Error).message,
             hint: (err as { hint?: string }).hint,
@@ -353,10 +380,3 @@ if (!gotLock) {
     if (process.platform !== 'darwin') app.quit();
   });
 }
-
-/** 打包后无需再检查 ffmpeg 是否存在（ffmpeg-static 随包分发）。 */
-export function isBundled(): boolean {
-  return app.isPackaged;
-}
-
-export { existsSync, pathToFileURL };

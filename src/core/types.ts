@@ -30,8 +30,8 @@ export interface OllamaProviderConfig {
 }
 
 export interface BilibiliProviderConfig {
-  /** B 站官方 AI 总结不返回可自由提问的结论，勾选后作为最终结果。 */
-  useAsFinalResult: boolean;
+  /** B 站官方 AI 总结的章节标题是否直接作为分段标题。 */
+  useOutlineAsTitles: boolean;
 }
 
 export interface OpenAiAsrConfig {
@@ -236,6 +236,8 @@ export interface VideoSummary {
   outline: { start: number; title: string }[];
   /** 关键洞察 / 值得注意的细节 */
   insights: string[];
+  /** 生成过程中的告警（如部分分块分析失败），需要如实告知用户 */
+  warnings: string[];
   /** 生成时使用的模型描述 */
   model: string;
   provider: string;

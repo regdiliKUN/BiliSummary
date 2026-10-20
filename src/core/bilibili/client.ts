@@ -145,12 +145,14 @@ export class BilibiliClient {
 
   /** 当前生效的 UA。 */
   private get currentUa(): string {
-    return this.uaIndex === 0 ? this.ua : FALLBACK_USER_AGENTS[this.uaIndex - 1]!;
+    if (this.uaIndex === 0) return this.ua;
+    // 下标越界时回退到最后一个备选，避免发出 "undefined" 的 UA
+    return FALLBACK_USER_AGENTS[Math.min(this.uaIndex, FALLBACK_USER_AGENTS.length) - 1]!;
   }
 
   /** 当前是否已携带登录态。 */
   get hasLogin(): boolean {
-    return this.cookie.includes('SESSDATA=');
+    return this.getCookieValue('SESSDATA').length > 0;
   }
 
   /** 从 Cookie 串中取出某个字段。 */
@@ -158,7 +160,6 @@ export class BilibiliClient {
     const match = this.cookie.match(new RegExp(`(?:^|;\\s*)${name}=([^;]*)`));
     return match ? decodeURIComponent(match[1]!) : '';
   }
-
   private headers(extra: Record<string, string> = {}): Record<string, string> {
     const h: Record<string, string> = {
       'User-Agent': this.currentUa,
@@ -221,6 +222,7 @@ export class BilibiliClient {
     url: string,
     extraHeaders: Record<string, string> = {},
     raw = false,
+    signal?: AbortSignal,
   ): Promise<T> {
     // 首次请求前先握手拿 buvid3，否则大概率 412
     await this.ensureBuvid();
@@ -230,12 +232,15 @@ export class BilibiliClient {
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       try {
-        return await this.getJsonOnce<T>(url, extraHeaders, raw);
+        const result = await this.getJsonOnce<T>(url, extraHeaders, raw, signal);
+        // 成功即恢复首选 UA（此前的降级只针对那一次风控）
+        this.uaIndex = 0;
+        return result;
       } catch (err) {
         lastError = err;
         // 412 = 风控：换一个 UA 并刷新指纹后重试
         if (err instanceof BilibiliError && err.code === 412 && attempt < maxAttempts - 1) {
-          this.uaIndex++;
+          this.uaIndex = Math.min(this.uaIndex + 1, FALLBACK_USER_AGENTS.length);
           await this.ensureBuvid(true);
           continue;
         }
@@ -249,8 +254,9 @@ export class BilibiliClient {
     url: string,
     extraHeaders: Record<string, string> = {},
     raw = false,
+    signal?: AbortSignal,
   ): Promise<T> {
-    const body = await this.fetchJsonOnce(url, extraHeaders);
+    const body = await this.fetchJsonOnce(url, extraHeaders, signal);
     if (raw) return body as unknown as T;
     const json = body as any;
     if (json.code !== 0) {
@@ -264,9 +270,17 @@ export class BilibiliClient {
   private async fetchJsonOnce(
     url: string,
     extraHeaders: Record<string, string> = {},
+    signal?: AbortSignal,
   ): Promise<unknown> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeout);
+    const onAbort = () => controller.abort();
+    signal?.addEventListener('abort', onAbort, { once: true });
+    // 请求发出前就已经被取消
+    if (signal?.aborted) {
+      clearTimeout(timer);
+      throw new BilibiliError('请求已取消', -2, url);
+    }
     try {
       const res = await this.fetchImpl(url, {
         method: 'GET',
@@ -286,11 +300,13 @@ export class BilibiliClient {
     } catch (err) {
       if (err instanceof BilibiliError) throw err;
       if ((err as Error).name === 'AbortError') {
+        if (signal?.aborted) throw new BilibiliError('请求已取消', -2, url);
         throw new BilibiliError('请求超时', -1, url);
       }
       throw new BilibiliError(`网络请求失败：${(err as Error).message}`, -1, url);
     } finally {
       clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
     }
   }
 
@@ -309,11 +325,12 @@ export class BilibiliClient {
       try {
         const body = (await this.fetchJsonOnce(url, extraHeaders)) as any;
         if (body?.code === 412) throw new BilibiliError('风控', 412, url);
+        this.uaIndex = 0;
         return (body?.data ?? body) as T;
       } catch (err) {
         lastError = err;
         if (err instanceof BilibiliError && err.code === 412 && attempt < maxAttempts - 1) {
-          this.uaIndex++;
+          this.uaIndex = Math.min(this.uaIndex + 1, FALLBACK_USER_AGENTS.length);
           await this.ensureBuvid(true);
           continue;
         }
@@ -345,14 +362,15 @@ export class BilibiliClient {
   private async getJsonWbi<T = unknown>(
     path: string,
     params: Record<string, string | number | undefined>,
+    signal?: AbortSignal,
   ): Promise<T> {
     const mixinKey = await this.getMixinKey();
     const { signedQuery } = signParams(params, mixinKey, Math.floor(Date.now() / 1000));
-    return this.getJson<T>(`${API_BASE}${path}?${signedQuery}`);
+    return this.getJson<T>(`${API_BASE}${path}?${signedQuery}`, {}, false, signal);
   }
 
   /** 解析短链 / 普通链接，拿到 bvid 与 aid。 */
-  async resolve(input: string): Promise<{ bvid: string; aid: number }> {
+  async resolve(input: string): Promise<{ bvid: string; aid: number; page?: number }> {
     let parsed = parseVideoInput(input);
 
     if (parsed.shortUrl) {
@@ -378,14 +396,14 @@ export class BilibiliClient {
       const data = await this.getJson<{ aid: number }>(
         `${API_BASE}/x/web-interface/view?bvid=${parsed.bvid}`,
       );
-      return { bvid: parsed.bvid, aid: data.aid };
+      return { bvid: parsed.bvid, aid: data.aid, page: parsed.page };
     }
 
     if (parsed.aid) {
       const data = await this.getJson<{ bvid: string }>(
         `${API_BASE}/x/web-interface/view?aid=${parsed.aid}`,
       );
-      return { bvid: data.bvid, aid: parsed.aid };
+      return { bvid: data.bvid, aid: parsed.aid, page: parsed.page };
     }
 
     throw new BilibiliError('无法解析视频标识');
@@ -432,17 +450,6 @@ export class BilibiliClient {
     };
   }
 
-  /** 获取分P列表。 */
-  async getParts(bvid: string): Promise<VideoPart[]> {
-    const data = await this.getJson<any>(`${API_BASE}/x/player/pagelist?bvid=${bvid}`);
-    return (data || []).map((p: any, i: number) => ({
-      cid: p.cid,
-      page: p.page ?? i + 1,
-      title: p.part || `P${i + 1}`,
-      duration: p.duration || 0,
-    }));
-  }
-
   /**
    * 获取官方字幕（CC / AI 字幕）。
    * 需要登录态；返回 null 表示该视频没有可用字幕。
@@ -451,15 +458,21 @@ export class BilibiliClient {
     bvid: string,
     cid: number,
     aid?: number,
+    signal?: AbortSignal,
   ): Promise<Transcript | null> {
     const params = { bvid, cid, aid: aid ?? 0 };
     let data: any;
     try {
-      data = await this.getJsonWbi<any>('/x/player/wbi/v2', params);
-    } catch {
+      data = await this.getJsonWbi<any>('/x/player/wbi/v2', params, signal);
+    } catch (err) {
+      // 取消时不要回退，直接抛出
+      if (err instanceof BilibiliError && err.code === -2) throw err;
       // 回退到旧接口
       data = await this.getJson<any>(
         `${API_BASE}/x/player/v2?bvid=${bvid}&cid=${cid}`,
+        {},
+        false,
+        signal,
       );
     }
 
@@ -517,14 +530,19 @@ export class BilibiliClient {
     bvid: string,
     cid: number,
     upMid: number,
+    signal?: AbortSignal,
   ): Promise<{ summary: string; outline: { start: number; end: number; title: string }[] } | null> {
     let data: any;
     try {
-      data = await this.getJsonWbi<any>('/x/web-interface/view/conclusion/get', {
-        bvid,
-        cid,
-        up_mid: upMid,
-      });
+      data = await this.getJsonWbi<any>(
+        '/x/web-interface/view/conclusion/get',
+        {
+          bvid,
+          cid,
+          up_mid: upMid,
+        },
+        signal,
+      );
     } catch (err) {
       if (err instanceof BilibiliError) {
         if (err.code === -404) return null;
@@ -617,9 +635,20 @@ export class BilibiliClient {
   }
 
   /** 下载二进制内容（音频等）。 */
-  async downloadBinary(url: string, referer: string): Promise<Buffer> {
+  async downloadBinary(
+    url: string,
+    referer: string,
+    signal?: AbortSignal,
+    timeout = 300000,
+  ): Promise<Buffer> {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 120000);
+    const timer = setTimeout(() => controller.abort(), timeout);
+    const onAbort = () => controller.abort();
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) {
+      clearTimeout(timer);
+      throw new BilibiliError('下载已取消', -2, url);
+    }
     try {
       const res = await this.fetchImpl(url, {
         headers: { 'User-Agent': this.currentUa, Referer: referer, Origin: WEB_BASE },
@@ -635,8 +664,20 @@ export class BilibiliClient {
         );
       }
       return Buffer.from(await res.arrayBuffer());
+    } catch (err) {
+      if (err instanceof BilibiliError) throw err;
+      if ((err as Error).name === 'AbortError') {
+        if (signal?.aborted) throw new BilibiliError('下载已取消', -2, url);
+        throw new BilibiliError(
+          `下载超时（${Math.round(timeout / 1000)}s），网络过慢或文件过大`,
+          -1,
+          url,
+        );
+      }
+      throw new BilibiliError(`下载失败：${(err as Error).message}`, -1, url);
     } finally {
       clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
     }
   }
 
@@ -722,11 +763,6 @@ export class BilibiliClient {
   /** 计算 wbi 签名（导出供测试）。 */
   static sign(params: Record<string, string | number | undefined>, mixinKey: string): string {
     return signParams(params, mixinKey, Math.floor(Date.now() / 1000)).signedQuery;
-  }
-
-  /** 生成一个随机请求 id。 */
-  static randomId(): string {
-    return createHash('md5').update(`${Date.now()}${Math.random()}`).digest('hex').slice(0, 16);
   }
 }
 
