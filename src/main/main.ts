@@ -454,9 +454,16 @@ if (!gotLock) {
     }
 
     // 打包版自检：用于验证安装后的快捷方式功能
-    if (process.env.BILISUMMARY_SELFTEST === 'shortcut') {
-      const { runShortcutSelfCheck } = await import('./shortcutSelfCheck.js');
-      await runShortcutSelfCheck();
+    const selfTest = process.env.BILISUMMARY_SELFTEST;
+    if (selfTest === 'shortcut' || selfTest === 'shortcut-create') {
+      const { runShortcutSelfCheck, createShortcutOnly } = await import(
+        './shortcutSelfCheck.js'
+      );
+      if (selfTest === 'shortcut-create') {
+        await createShortcutOnly();
+      } else {
+        await runShortcutSelfCheck();
+      }
       app.exit(Number(process.exitCode ?? 0));
       return;
     }

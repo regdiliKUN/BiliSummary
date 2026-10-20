@@ -443,13 +443,14 @@ export class BilibiliClient {
       cid: data.cid,
       title: data.title,
       desc: data.desc || '',
-      cover: data.pic || '',
+      // B 站的部分图片 URL 是 http://，渲染层的 CSP 只放行 https://，这里统一升级
+      cover: toHttps(data.pic || ''),
       duration: data.duration || parts[0]?.duration || 0,
       pubdate: data.pubdate || 0,
       owner: {
         mid: data.owner?.mid ?? 0,
         name: data.owner?.name ?? '未知UP主',
-        face: data.owner?.face || '',
+        face: toHttps(data.owner?.face || ''),
       },
       stat,
       parts,
@@ -772,6 +773,11 @@ export class BilibiliClient {
   static sign(params: Record<string, string | number | undefined>, mixinKey: string): string {
     return signParams(params, mixinKey, Math.floor(Date.now() / 1000)).signedQuery;
   }
+}
+
+/** 把 http:// 升级为 https://（B 站图片在混合内容下会被浏览器拦截）。 */
+function toHttps(url: string): string {
+  return url.startsWith('http://') ? `https://${url.slice(7)}` : url;
 }
 
 /** 解码弹幕里的 HTML 实体。 */

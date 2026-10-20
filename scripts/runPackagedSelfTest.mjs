@@ -1,7 +1,9 @@
 /**
- * 在已打包的应用里跑一次快捷方式自检。
+ * 在已打包的应用里跑一次快捷方式自检，或只创建快捷方式并保留。
  *
- * 用法：npm run check:shortcut:packaged
+ * 用法：
+ *   npm run check:shortcut:packaged          完整自检（测完删除，不留残留）
+ *   npm run check:shortcut:packaged -- keep  只创建并保留
  * 需要先执行 npm run dist:win 生成 release/win-unpacked。
  */
 import { spawn } from 'node:child_process';
@@ -22,11 +24,14 @@ if (!exe) {
   process.exit(1);
 }
 
+const keep = process.argv.includes('keep');
+const mode = keep ? 'shortcut-create' : 'shortcut';
+
 console.log(`运行: ${exe}\n`);
 
 const proc = spawn(exe, [], {
   stdio: 'inherit',
-  env: { ...process.env, BILISUMMARY_SELFTEST: 'shortcut' },
+  env: { ...process.env, BILISUMMARY_SELFTEST: mode },
 });
 
 proc.on('close', (code) => {
