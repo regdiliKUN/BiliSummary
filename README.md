@@ -199,6 +199,11 @@ npm run check:e2e -- --synthetic   # 视频没字幕时用合成字幕继续验�
 
 ## 常见问题
 
+**Q：提示「ffmpeg 下载失败」**
+A：`ffmpeg-static` 的二进制在网络异常时可能下载失败，表现为 ASR 用不了但没有别的提示。
+`npm install` 的 postinstall 阶段会自动重试一次；仍失败可手动执行 `npm run postinstall`。
+这只影响语音识别，不影响「官方字幕 + LLM 摘要」这条主路径。
+
 **Q：提示「未登录，无法获取官方字幕」**
 A：字幕需要登录态。在设置里点「打开登录窗口」扫码登录，或手动粘贴含 `SESSDATA` 的 Cookie。
 

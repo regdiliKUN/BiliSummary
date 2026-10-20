@@ -8,6 +8,7 @@
   "license": "MIT",
   "private": true,
   "scripts": {
+    "postinstall": "node scripts/ensureFfmpeg.mjs",
     "dev": "node scripts/dev.mjs",
     "build": "node scripts/build.mjs",
     "icon": "node scripts/makeIcon.mjs",
