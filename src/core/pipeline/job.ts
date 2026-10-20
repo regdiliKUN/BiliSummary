@@ -109,7 +109,7 @@ export async function runJob(opts: RunJobOptions): Promise<JobResult> {
         })));
 
     if (!usesBuiltinSummary) {
-      report('fetching-subtitle', '字幕获取完成', 45);
+      report('fetching-subtitle', '字幕获取完成', 40);
     }
 
     // --- 3. 弹幕（摘要需要它来定位名场面，必须先抓）---
