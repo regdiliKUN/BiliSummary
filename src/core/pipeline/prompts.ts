@@ -21,18 +21,36 @@ export const MERGE_SYSTEM = `你是一名专业的视频内容编辑，负责把
 /** 逐块摘要的提示词。 */
 export function buildChunkPrompt(params: {
   title: string;
+  description?: string;
   duration: number;
   chunkText: string;
   chunkIndex: number;
   chunkTotal: number;
   isFirst: boolean;
   previousTail?: string;
+  /** 该时间范围内的弹幕热点，辅助模型定位名场面 */
+  hotMoments?: string;
   language: string;
 }): string {
-  const { title, duration, chunkText, chunkIndex, chunkTotal, isFirst, previousTail, language } = params;
+  const {
+    title,
+    description,
+    duration,
+    chunkText,
+    chunkIndex,
+    chunkTotal,
+    isFirst,
+    previousTail,
+    hotMoments,
+    language,
+  } = params;
 
   const parts: string[] = [];
   parts.push(`视频标题：${title}`);
+  if (description) {
+    parts.push(`视频简介（UP 主提供的背景信息，可用于理解术语与上下文）：`);
+    parts.push(description);
+  }
   parts.push(`视频总时长：${formatShort(duration)}`);
   parts.push(`当前处理第 ${chunkIndex + 1}/${chunkTotal} 段字幕。`);
   if (!isFirst && previousTail) {
@@ -43,6 +61,11 @@ export function buildChunkPrompt(params: {
   parts.push('```');
   parts.push(chunkText);
   parts.push('```');
+  if (hotMoments) {
+    parts.push('');
+    parts.push('以下时间点弹幕密集，通常是名场面或高潮，请确保这些内容被重点覆盖：');
+    parts.push(hotMoments);
+  }
   parts.push('');
   parts.push('请输出如下 JSON 结构：');
   parts.push(
@@ -77,12 +100,13 @@ export function buildChunkPrompt(params: {
 /** 合并为最终摘要的提示词。 */
 export function buildMergePrompt(params: {
   title: string;
+  description?: string;
   duration: number;
   chunkSummaries: { index: number; start: number; end: number; data: SummarySegment[] }[];
   language: string;
   hasFullTranscript?: boolean;
 }): string {
-  const { title, duration, chunkSummaries, language } = params;
+  const { title, description, duration, chunkSummaries, language } = params;
 
   const rendered = chunkSummaries
     .map((chunk) => {
@@ -99,6 +123,10 @@ export function buildMergePrompt(params: {
 
   const parts: string[] = [];
   parts.push(`视频标题：${title}`);
+  if (description) {
+    parts.push(`视频简介：`);
+    parts.push(description);
+  }
   parts.push(`视频总时长：${formatShort(duration)}`);
   parts.push('');
   parts.push('以下是分段摘要：');

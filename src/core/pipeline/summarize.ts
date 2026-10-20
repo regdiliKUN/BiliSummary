@@ -16,9 +16,10 @@ import type {
   VideoInfo,
   VideoSummary,
 } from '../types.js';
-import { extractJson, normalizeText, toStringList } from '../utils/text.js';
+import { extractJson, normalizeText, toStringList, truncate } from '../utils/text.js';
 import { chunkTranscript, formatShort, type TranscriptChunk } from './chunk.js';
 import { buildChunkPrompt, buildMergePrompt, CHUNK_SYSTEM, MERGE_SYSTEM } from './prompts.js';
+import { findHotMoments, renderHotMoments } from './hotmoments.js';
 
 export interface SummarizeOptions {
   provider: LlmProvider;
@@ -77,6 +78,12 @@ export async function summarize(opts: SummarizeOptions): Promise<VideoSummary> {
     detail: `共 ${transcript.segments.length} 条字幕`,
   });
 
+  // 弹幕热点：给模型提供「哪里是名场面」的线索
+  const hotMoments = findHotMoments(opts.danmaku ?? [], video.duration);
+  if (hotMoments.length) {
+    console.log(`识别到 ${hotMoments.length} 个弹幕热点`);
+  }
+
   // --- 逐块摘要 ---
   const chunkResults: { index: number; start: number; end: number; data: SummarySegment[] }[] = [];
   const chunkErrors: Error[] = [];
@@ -91,6 +98,7 @@ export async function summarize(opts: SummarizeOptions): Promise<VideoSummary> {
         video,
         chunk,
         chunkTotal: chunks.length,
+        hotMoments: renderHotMoments(hotMoments, { start: chunk.start, end: chunk.end }) || undefined,
         language: config.summaryLanguage,
         signal,
       });
@@ -157,20 +165,23 @@ async function summarizeChunk(params: {
   video: VideoInfo;
   chunk: TranscriptChunk;
   chunkTotal: number;
+  hotMoments?: string;
   language: string;
   signal?: AbortSignal;
 }): Promise<SummarySegment[]> {
-  const { provider, video, chunk, chunkTotal, language, signal } = params;
+  const { provider, video, chunk, chunkTotal, hotMoments, language, signal } = params;
 
   const previousTail = chunk.index > 0 ? tailOf(chunk) : undefined;
   const prompt = buildChunkPrompt({
     title: video.title,
+    description: truncate(video.desc.trim(), 800) || undefined,
     duration: video.duration,
     chunkText: chunk.text,
     chunkIndex: chunk.index,
     chunkTotal,
     isFirst: chunk.index === 0,
     previousTail,
+    hotMoments,
     language,
   });
 
@@ -211,6 +222,7 @@ async function mergeSummaries(params: {
 
   const prompt = buildMergePrompt({
     title: video.title,
+    description: truncate(video.desc.trim(), 800) || undefined,
     duration: video.duration,
     chunkSummaries: chunkResults,
     language,

@@ -44,6 +44,9 @@ export interface BiliSummaryApi {
   exportTranscript(defaultName: string, content: string): Promise<{ ok: boolean; path?: string; canceled?: boolean }>;
   openExternal(url: string): Promise<void>;
 
+  /** 弹出文件选择框，返回所选路径 */
+  pickFile(kind: 'exe' | 'model' | 'binary'): Promise<{ ok: boolean; path?: string; canceled?: boolean }>;
+
   /* 应用信息 */
   getAppInfo(): Promise<{ version: string; platform: string; configPath: string }>;
 }
@@ -96,6 +99,7 @@ const api: BiliSummaryApi = {
   exportTranscript: (defaultName, content) =>
     ipcRenderer.invoke('file:exportTranscript', defaultName, content),
   openExternal: (url) => ipcRenderer.invoke('shell:open', url),
+  pickFile: (kind) => ipcRenderer.invoke('dialog:pickFile', kind),
 
   getAppInfo: () => ipcRenderer.invoke('app:info'),
 };

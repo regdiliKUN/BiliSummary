@@ -16,7 +16,9 @@ html = html.replace(
   '</head>',
   '<style>html,body{width:1280px!important;min-width:1280px}' +
     '.modal{width:1280px!important;left:0!important;right:auto!important}' +
-    '.modal-body{width:720px!important}</style></head>',
+    '.modal-body{width:760px!important;max-height:none!important}' +
+    '.modal-content{overflow:visible!important}' +
+    '.hidden{display:block!important}</style></head>',
 );
 
 writeFileSync(join(dir, 'preview-settings.html'), html, 'utf8');

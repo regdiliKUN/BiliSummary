@@ -285,15 +285,24 @@
             <div id="cfg-asr-whisper" class="provider-fields hidden">
               <label class="field">
                 <span>whisper 可执行文件</span>
-                <input id="cfg-whisper-bin" class="input" type="text" placeholder="C:\\whisper\\whisper-cli.exe" />
+                <div class="field-with-btn">
+                  <input id="cfg-whisper-bin" class="input" type="text" placeholder="C:\\whisper\\whisper-cli.exe" />
+                  <button id="pick-whisper-bin" class="btn btn-ghost btn-sm" type="button">浏览</button>
+                </div>
               </label>
               <label class="field">
                 <span>模型文件 (ggml-*.bin)</span>
-                <input id="cfg-whisper-model" class="input" type="text" placeholder="C:\\whisper\\ggml-large-v3-turbo.bin" />
+                <div class="field-with-btn">
+                  <input id="cfg-whisper-model" class="input" type="text" placeholder="C:\\whisper\\ggml-large-v3-turbo.bin" />
+                  <button id="pick-whisper-model" class="btn btn-ghost btn-sm" type="button">浏览</button>
+                </div>
               </label>
               <label class="field">
                 <span>ffmpeg 路径（留空则用内置）</span>
-                <input id="cfg-ffmpeg" class="input" type="text" placeholder="留空自动检测" />
+                <div class="field-with-btn">
+                  <input id="cfg-ffmpeg" class="input" type="text" placeholder="留空自动检测" />
+                  <button id="pick-ffmpeg" class="btn btn-ghost btn-sm" type="button">浏览</button>
+                </div>
               </label>
             </div>
           </div>

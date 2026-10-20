@@ -649,6 +649,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
   $<HTMLButtonElement>('test-llm').addEventListener('click', () => void testProvider());
   $<HTMLButtonElement>('test-asr').addEventListener('click', () => void testAsr());
+  $<HTMLButtonElement>('pick-whisper-bin').addEventListener('click', () => void pickPath('cfg-whisper-bin', 'exe'));
+  $<HTMLButtonElement>('pick-whisper-model').addEventListener('click', () => void pickPath('cfg-whisper-model', 'model'));
+  $<HTMLButtonElement>('pick-ffmpeg').addEventListener('click', () => void pickPath('cfg-ffmpeg', 'binary'));
   $<HTMLButtonElement>('cfg-login-btn').addEventListener('click', () => void handleLogin());
   $<HTMLButtonElement>('cfg-logout-btn').addEventListener('click', async () => {
     await api.logout();
@@ -683,6 +686,21 @@ async function testAsr(): Promise<void> {
   } catch (err) {
     result.className = 'test-result fail';
     result.textContent = (err as Error).message;
+  }
+}
+
+/** 弹出文件选择框并把路径写回输入框。 */
+async function pickPath(
+  inputId: string,
+  kind: 'exe' | 'model' | 'binary',
+): Promise<void> {
+  try {
+    const res = await api.pickFile(kind);
+    if (res.ok && res.path) {
+      $<HTMLInputElement>(inputId).value = res.path;
+    }
+  } catch (err) {
+    showToast(`选择文件失败：${(err as Error).message}`, 'error');
   }
 }
 

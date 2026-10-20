@@ -125,7 +125,7 @@ export interface BilibiliClientOptions {
 }
 
 export class BilibiliClient {
-  private readonly cookie: string;
+  private cookie: string;
   private readonly ua: string;
   private readonly timeout: number;
   private readonly fetchImpl: typeof fetch;
@@ -141,6 +141,14 @@ export class BilibiliClient {
     this.ua = opts.userAgent || DEFAULT_UA;
     this.timeout = opts.timeout ?? 15000;
     this.fetchImpl = opts.fetchImpl ?? fetch;
+  }
+
+  /**
+   * 更新 Cookie（登录/退出后调用）。
+   * 保留 buvid 与 WBI 缓存，避免每次都重新握手。
+   */
+  setCookie(cookie: string): void {
+    this.cookie = (cookie || '').trim();
   }
 
   /** 当前生效的 UA。 */
