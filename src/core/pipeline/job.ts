@@ -112,22 +112,10 @@ export async function runJob(opts: RunJobOptions): Promise<JobResult> {
       report('fetching-subtitle', '字幕获取完成', 45);
     }
 
-    // --- 3. 摘要 ---
-    const summary = await summarize({
-      provider,
-      video,
-      transcript,
-      config,
-      signal,
-      onProgress: (info) => {
-        report('summarizing', info.message, info.percent, info.detail);
-      },
-    });
-
-    // --- 4. 弹幕（只用于输出，放在摘要之后以保证进度单调递增）---
+    // --- 3. 弹幕（摘要需要它来定位名场面，必须先抓）---
     let danmaku: DanmakuItem[] = [];
     if (config.useDanmaku && config.danmakuLimit > 0) {
-      report('fetching-danmaku', '正在抓取弹幕', 92);
+      report('fetching-danmaku', '正在抓取弹幕', 42);
       try {
         danmaku = await client.getDanmaku(cid, config.danmakuLimit);
       } catch (err) {
@@ -135,6 +123,19 @@ export async function runJob(opts: RunJobOptions): Promise<JobResult> {
         danmaku = [];
       }
     }
+
+    // --- 4. 摘要 ---
+    const summary = await summarize({
+      provider,
+      video,
+      transcript,
+      config,
+      danmaku,
+      signal,
+      onProgress: (info) => {
+        report('summarizing', info.message, info.percent, info.detail);
+      },
+    });
 
     // --- 5. 渲染 ---
     report('rendering', '正在生成 Markdown', 95);

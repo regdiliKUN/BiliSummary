@@ -235,6 +235,16 @@ body {
   flex: 1;
 }
 
+.field-with-btn {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.field-with-btn .input {
+  flex: 1;
+}
+
 .checkbox-field {
   display: flex;
   align-items: center;

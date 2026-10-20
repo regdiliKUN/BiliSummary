@@ -65,6 +65,27 @@ function getConfig(): AppConfig {
   return getConfigStore().load();
 }
 
+/**
+ * 全局复用的 B 站客户端。
+ *
+ * 复用后 buvid 指纹与 WBI 签名密钥都能跨任务缓存，
+ * 省掉每次任务都重新握手，也降低触发风控的概率。
+ */
+let sharedClient: BilibiliClient | null = null;
+let sharedClientCookie = '';
+
+function getClient(): BilibiliClient {
+  const cookie = getConfig().cookie;
+  if (!sharedClient) {
+    sharedClient = new BilibiliClient({ cookie });
+    sharedClientCookie = cookie;
+  } else if (cookie !== sharedClientCookie) {
+    sharedClient.setCookie(cookie);
+    sharedClientCookie = cookie;
+  }
+  return sharedClient;
+}
+
 /* ------------------------------------------------------------------ */
 /* 窗口                                                                */
 /* ------------------------------------------------------------------ */
@@ -206,8 +227,7 @@ function registerIpc(): void {
   ipcMain.handle('login:start', () => openLoginWindow());
 
   ipcMain.handle('login:status', async () => {
-    const client = new BilibiliClient({ cookie: getConfig().cookie });
-    return client.checkLogin();
+    return getClient().checkLogin();
   });
 
   ipcMain.handle('login:logout', async () => {
@@ -232,7 +252,7 @@ function registerIpc(): void {
 
   // --- 视频信息 ---
   ipcMain.handle('video:info', async (_e, url: string): Promise<VideoInfo> => {
-    const client = new BilibiliClient({ cookie: getConfig().cookie });
+    const client = getClient();
     const { bvid } = await client.resolve(url);
     return client.getVideoInfo(bvid);
   });
@@ -252,6 +272,7 @@ function registerIpc(): void {
           request,
           config,
           jobId,
+          client: getClient(),
           signal: controller.signal,
           onProgress: (progress: JobProgress) => {
             sendToRenderer('job:progress', progress);
@@ -289,8 +310,7 @@ function registerIpc(): void {
   // --- 供应商检测 ---
   ipcMain.handle('provider:check', async (_e, kind: LlmProviderKind) => {
     const config = getConfig();
-    const client = new BilibiliClient({ cookie: config.cookie });
-    const provider = createProvider(kind, config, client);
+    const provider = createProvider(kind, config, getClient());
     return provider.healthCheck();
   });
 
@@ -342,6 +362,30 @@ function registerIpc(): void {
 
   ipcMain.handle('shell:open', async (_e, url: string) => {
     if (/^https?:\/\//i.test(url)) await shell.openExternal(url);
+  });
+
+  // --- 选择本地可执行文件 / 模型文件 ---
+  ipcMain.handle('dialog:pickFile', async (_e, kind: 'exe' | 'model' | 'binary') => {
+    const filters =
+      kind === 'model'
+        ? [{ name: '模型文件', extensions: ['bin', 'gguf', 'pt', 'onnx'] }]
+        : kind === 'binary'
+          ? [{ name: '可执行文件', extensions: ['exe', 'bat', 'cmd', ''] }]
+          : [{ name: '所有文件', extensions: ['*'] }];
+
+    const result = await dialog.showOpenDialog({
+      title:
+        kind === 'model'
+          ? '选择模型文件'
+          : kind === 'binary'
+            ? '选择 ffmpeg 可执行文件'
+            : '选择 whisper 可执行文件',
+      properties: kind === 'model' ? ['openFile'] : ['openFile'],
+      filters,
+    });
+
+    if (result.canceled || !result.filePaths[0]) return { ok: false, canceled: true };
+    return { ok: true, path: result.filePaths[0] };
   });
 
   ipcMain.handle('app:info', () => ({
