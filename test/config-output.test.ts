@@ -31,6 +31,7 @@ const summary: VideoSummary = {
     { start: 125.5, title: '正文' },
   ],
   insights: ['一个值得注意的点'],
+  warnings: [],
   model: 'test-model',
   provider: 'openai',
   transcriptSource: 'subtitle',

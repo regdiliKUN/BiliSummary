@@ -25,7 +25,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     contextChars: 8000,
   },
   bilibili: {
-    useAsFinalResult: true,
+    useOutlineAsTitles: true,
   },
   asrProvider: 'none',
   openaiAsr: {

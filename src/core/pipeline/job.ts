@@ -57,19 +57,20 @@ export async function runJob(opts: RunJobOptions): Promise<JobResult> {
     report('fetching-info', '正在解析视频链接', 5);
 
     // --- 1. 视频信息 ---
-    const { bvid, aid } = await client.resolve(request.url);
+    const { bvid, aid, page: urlPage } = await client.resolve(request.url);
     const video: VideoInfo = await client.getVideoInfo(bvid);
 
-    // 选择分P
+    // 选择分P：显式指定的优先，其次是链接里的 ?p=，最后是 P1
+    const targetPart = request.part ?? urlPage ?? 1;
     let cid = video.cid;
-    if (request.part && request.part > 1) {
-      const part = video.parts.find((p) => p.page === request.part);
-      if (!part) throw new JobError(`该视频没有 P${request.part}`);
+    if (targetPart > 1) {
+      const part = video.parts.find((p) => p.page === targetPart);
+      if (!part) throw new JobError(`该视频没有 P${targetPart}`);
       cid = part.cid;
       video.cid = part.cid;
       video.duration = part.duration || video.duration;
       video.title = `${video.title} - P${part.page} ${part.title}`;
-    } else if (request.part === 1 && video.parts.length > 1) {
+    } else if (targetPart === 1 && video.parts.length > 1) {
       const part = video.parts[0];
       if (part) {
         cid = part.cid;
@@ -183,7 +184,7 @@ async function acquireTranscript(params: {
 
   // 用户强制使用 B 站官方总结 -> 用官方字幕兜底
   if (forceSource === 'bilibili-ai') {
-    const conclusion = await client.getBuiltinSummary(bvid, cid, video.owner.mid);
+    const conclusion = await client.getBuiltinSummary(bvid, cid, video.owner.mid, signal);
     if (conclusion) {
       return {
         source: 'bilibili-ai',
@@ -200,11 +201,12 @@ async function acquireTranscript(params: {
   {
     report('fetching-subtitle', '正在获取官方字幕', 20);
     try {
-      const subtitle = await client.getSubtitles(bvid, cid, aid);
+      const subtitle = await client.getSubtitles(bvid, cid, aid, signal);
       if (subtitle?.segments.length) {
         return subtitle;
       }
     } catch (err) {
+      if (signal?.aborted) throw err;
       console.warn('官方字幕获取失败：', (err as Error).message);
     }
 
@@ -213,6 +215,14 @@ async function acquireTranscript(params: {
     } else {
       report('fetching-subtitle', '该视频没有官方字幕', 20);
     }
+  }
+
+  // 用户明确选择了「仅官方字幕」，到此为止，不再回退到 ASR
+  if (forceSource === 'subtitle') {
+    throw new JobError(
+      '该视频没有可用的官方字幕。',
+      '若该视频确实没有字幕，可以在「摘要来源」里改选「语音识别」自动转写。',
+    );
   }
 
   // 回退：ASR
@@ -245,7 +255,7 @@ async function transcribeAudio(params: {
 
   report('downloading-audio', '正在下载音频', 25);
   const ffmpegPath = await resolveFfmpegPath(config.whisperCpp.ffmpegPath);
-  const workspace = await prepareAudio(client, bvid, cid, aid, ffmpegPath);
+  const workspace = await prepareAudio(client, bvid, cid, aid, ffmpegPath, signal);
 
   try {
     report('transcribing', `正在转写音频（${asr.name}）`, 32);

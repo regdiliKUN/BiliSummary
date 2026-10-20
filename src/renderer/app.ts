@@ -56,6 +56,8 @@ const el = {
   summarySegments: $('summary-segments'),
   insightsBlock: $('insights-block'),
   summaryInsights: $('summary-insights'),
+  warningsBlock: $('warnings-block'),
+  summaryWarnings: $('summary-warnings'),
   summaryMeta: $('summary-meta'),
   markdownView: $('markdown-view'),
   transcriptView: $('transcript-view'),
@@ -262,6 +264,12 @@ function renderVideoInfo(video: VideoInfo): void {
     el.partSelect.appendChild(option);
   });
   el.partSelect.disabled = video.parts.length <= 1;
+
+  // 链接里带 ?p= 时预选对应的分P
+  const urlPart = Number(el.urlInput.value.match(/[?&]p=(\d+)/)?.[1] ?? '1');
+  if (urlPart > 1 && video.parts.some((p) => p.page === urlPart)) {
+    el.partSelect.value = String(urlPart);
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -364,6 +372,14 @@ function renderResult(result: JobResult): void {
     renderList(el.summaryInsights, summary.insights);
   } else {
     el.insightsBlock.classList.add('hidden');
+  }
+
+  if (summary.warnings?.length) {
+    el.warningsBlock.classList.remove('hidden');
+    renderList(el.summaryWarnings, summary.warnings);
+    showToast('摘要可能不完整，请查看「注意」', 'error');
+  } else {
+    el.warningsBlock.classList.add('hidden');
   }
 
   const sourceLabel: Record<string, string> = {
@@ -602,12 +618,22 @@ async function handleSaveSettings(): Promise<void> {
   try {
     config = await api.setConfig(partial);
     populateProviderSelect(config);
-    el.settingsStatus.textContent = '设置已保存';
     await refreshLoginStatus();
     showToast('设置已保存', 'ok');
+
+    // 把配置校验结果显示出来，避免用户以为配好了却用不了
+    const issues = await api.validateConfig();
+    if (issues.length) {
+      el.settingsStatus.textContent = `已保存，但有 ${issues.length} 项需要确认：${issues.join('；')}`;
+      el.settingsStatus.classList.add('settings-status-warn');
+    } else {
+      el.settingsStatus.textContent = '设置已保存，配置检查通过';
+      el.settingsStatus.classList.remove('settings-status-warn');
+    }
     window.setTimeout(() => {
       el.settingsStatus.textContent = '';
-    }, 2500);
+      el.settingsStatus.classList.remove('settings-status-warn');
+    }, 6000);
   } catch (err) {
     el.settingsStatus.textContent = `保存失败：${(err as Error).message}`;
   }

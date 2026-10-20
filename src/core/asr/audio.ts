@@ -72,6 +72,7 @@ export async function prepareAudio(
   cid: number,
   aid: number | undefined,
   ffmpegPath: string | null,
+  signal?: AbortSignal,
 ): Promise<AudioWorkspace> {
   const dir = await mkdtemp(join(tmpdir(), 'bili-summary-'));
   const rawPath = join(dir, 'audio.m4s');
@@ -88,10 +89,17 @@ export async function prepareAudio(
     let data: Buffer | null = null;
     let lastError: unknown = null;
     for (const url of candidates) {
+      if (signal?.aborted) throw new Error('任务已取消');
       try {
-        data = await client.downloadBinary(url, `https://www.bilibili.com/video/${bvid}/`);
+        data = await client.downloadBinary(
+          url,
+          `https://www.bilibili.com/video/${bvid}/`,
+          signal,
+        );
         break;
       } catch (err) {
+        // 取消时不再尝试其它节点
+        if (signal?.aborted) throw err;
         lastError = err;
         console.warn(`音频节点不可用，尝试下一个：${(err as Error).message}`);
       }
@@ -122,7 +130,7 @@ export async function prepareAudio(
       '-c:a',
       'pcm_s16le',
       wavPath,
-    ]);
+    ], signal);
 
     return { dir, rawPath, wavPath, cleanup };
   } catch (err) {
@@ -132,18 +140,51 @@ export async function prepareAudio(
 }
 
 /** 执行 ffmpeg，失败时抛出带 stderr 的错误。 */
-function runFfmpeg(bin: string, args: string[]): Promise<void> {
+function runFfmpeg(bin: string, args: string[], signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error('任务已取消'));
+      return;
+    }
+
     const proc = spawn(bin, args, { windowsHide: true });
     let stderr = '';
+    let settled = false;
+
+    const kill = () => {
+      try {
+        if (process.platform === 'win32' && proc.pid) {
+          spawn('taskkill', ['/pid', String(proc.pid), '/T', '/F'], { windowsHide: true });
+        } else {
+          proc.kill('SIGKILL');
+        }
+      } catch {
+        proc.kill();
+      }
+    };
+
+    const finish = (err?: Error) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener('abort', onAbort);
+      if (err) reject(err);
+      else resolve();
+    };
+
+    const onAbort = () => {
+      kill();
+      finish(new Error('转码已取消'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+
     proc.stderr?.on('data', (d) => {
       stderr += d.toString();
       if (stderr.length > 8000) stderr = stderr.slice(-8000);
     });
-    proc.on('error', (err) => reject(new Error(`无法启动 ffmpeg：${err.message}`)));
+    proc.on('error', (err) => finish(new Error(`无法启动 ffmpeg：${err.message}`)));
     proc.on('close', (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`ffmpeg 转码失败（退出码 ${code}）：${stderr.slice(-500)}`));
+      if (code === 0) finish();
+      else finish(new Error(`ffmpeg 转码失败（退出码 ${code}）：${stderr.slice(-500)}`));
     });
   });
 }

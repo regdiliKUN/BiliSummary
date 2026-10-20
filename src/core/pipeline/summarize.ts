@@ -57,6 +57,7 @@ export async function summarize(opts: SummarizeOptions): Promise<VideoSummary> {
     summary.model = 'B站官方AI总结';
     summary.provider = 'bilibili';
     summary.transcriptSource = 'bilibili-ai';
+    summary.warnings = summary.warnings ?? [];
     return summary;
   }
 
@@ -79,6 +80,7 @@ export async function summarize(opts: SummarizeOptions): Promise<VideoSummary> {
   // --- 逐块摘要 ---
   const chunkResults: { index: number; start: number; end: number; data: SummarySegment[] }[] = [];
   const chunkErrors: Error[] = [];
+  const warnings: string[] = [];
   let done = 0;
 
   const processChunk = async (chunk: TranscriptChunk) => {
@@ -113,7 +115,11 @@ export async function summarize(opts: SummarizeOptions): Promise<VideoSummary> {
     throw chunkErrors[0] ?? new Error('所有分块的分析都失败了');
   }
   if (chunkErrors.length) {
-    console.warn(`有 ${chunkErrors.length}/${chunks.length} 段分析失败，已跳过`);
+    // 必须让用户知道摘要并不完整，不能静默丢内容
+    const msg = `有 ${chunkErrors.length}/${chunks.length} 段字幕分析失败，摘要可能不完整`;
+    warnings.push(msg);
+    console.warn(msg);
+    onProgress?.({ percent: 85, message: msg });
   }
 
   chunkResults.sort((a, b) => a.index - b.index);
@@ -134,6 +140,7 @@ export async function summarize(opts: SummarizeOptions): Promise<VideoSummary> {
     segments: merged.segments,
     outline: merged.outline,
     insights: merged.insights,
+    warnings,
     model: provider.kind === 'ollama' ? config.ollama.model : config.openai.model,
     provider: provider.kind,
     transcriptSource: transcript.source,

@@ -183,6 +183,9 @@ describe('摘要管线', () => {
     const summary = await summarize({ provider, video, transcript, config: multiConfig });
     expect(summary.tldr).toBe('T');
     expect(summary.segments.length).toBeGreaterThan(0);
+    // 关键：部分分块失败必须如实告知用户，不能静默丢内容
+    expect(summary.warnings.length).toBe(1);
+    expect(summary.warnings[0]).toMatch(/1\/2/);
   });
 
   it('所有分块都失败时抛出错误', async () => {

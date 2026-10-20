@@ -85,7 +85,7 @@ const api: BiliSummaryApi = {
   onJobCancelled: (cb) => {
     const listener = (_e: unknown, info: { jobId: string }) => cb(info);
     ipcRenderer.on('job:cancelled', listener);
-    return () => ipcRenderer.removeListener('job:closed', listener);
+    return () => ipcRenderer.removeListener('job:cancelled', listener);
   },
 
   checkProvider: (kind) => ipcRenderer.invoke('provider:check', kind),

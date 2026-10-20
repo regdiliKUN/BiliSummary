@@ -27,6 +27,9 @@ export class OllamaProvider implements LlmProvider {
   }
 
   async chat(req: ChatRequest): Promise<ChatResponse> {
+    // 请求发出前就已被取消
+    if (req.signal?.aborted) throw new Error('请求已取消');
+
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeout);
     const onAbort = () => controller.abort();

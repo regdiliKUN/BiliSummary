@@ -595,6 +595,22 @@ body {
   margin-top: 8px;
 }
 
+.warning-block {
+  background: rgba(240, 178, 63, 0.07);
+  border: 1px solid rgba(240, 178, 63, 0.3);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+}
+
+.warning-block h3 {
+  color: var(--yellow);
+  border-bottom-color: rgba(240, 178, 63, 0.3);
+}
+
+.warning-block .points li::before {
+  background: var(--yellow);
+}
+
 .markdown-view {
   background: var(--bg-elev-2);
   border-radius: var(--radius-sm);
@@ -718,6 +734,10 @@ body {
   font-size: 12px;
   color: var(--text-faint);
   flex: 1;
+}
+
+.settings-status-warn {
+  color: var(--yellow);
 }
 
 .setting-group {

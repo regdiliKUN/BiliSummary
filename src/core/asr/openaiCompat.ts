@@ -25,6 +25,9 @@ export class OpenAiAsrProvider implements AsrProvider {
   }
 
   async transcribe(audioPath: string, opts: { signal?: AbortSignal } = {}): Promise<AsrResult> {
+    // 请求发出前就已被取消
+    if (opts.signal?.aborted) throw new Error('转写已取消');
+
     const form = new FormData();
     const blob = await openAsBlob(audioPath, { type: 'audio/wav' });
     form.append('file', blob, basename(audioPath));
