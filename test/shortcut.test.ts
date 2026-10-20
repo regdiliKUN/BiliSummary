@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { basename, join } from 'node:path';
 import {
   linuxDesktopEntry,
   parseIconLocation,
@@ -26,9 +27,17 @@ describe('各平台快捷方式文件名', () => {
   });
 
   it('路径拼接使用桌面目录', () => {
-    expect(shortcutPath('win32', 'C:\\Users\\x\\Desktop', 'BiliSummary')).toBe(
-      'C:\\Users\\x\\Desktop\\BiliSummary.lnk',
+    // 用 path.join 生成期望值，避免写死平台分隔符
+    expect(shortcutPath('win32', join('C:', 'Users', 'x', 'Desktop'), 'BiliSummary')).toBe(
+      join('C:', 'Users', 'x', 'Desktop', 'BiliSummary.lnk'),
     );
+  });
+
+  it('桌面目录与名称拼接顺序正确', () => {
+    // 只断言与平台无关的部分：目录在前、文件名在后
+    const p = shortcutPath('linux', join('home', 'x', 'Desktop'), 'BiliSummary');
+    expect(basename(p)).toBe('BiliSummary.desktop');
+    expect(p).toContain(join('home', 'x', 'Desktop'));
   });
 });
 
