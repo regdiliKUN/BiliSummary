@@ -247,6 +247,39 @@ export interface VideoSummary {
 }
 
 /* ------------------------------------------------------------------ */
+/* 桌面快捷方式                                                          */
+/* ------------------------------------------------------------------ */
+
+export type ShortcutPlatform = 'win32' | 'darwin' | 'linux' | 'unsupported';
+
+export interface ShortcutState {
+  /** 当前平台是否支持创建快捷方式 */
+  supported: boolean;
+  platform: ShortcutPlatform;
+  /** 快捷方式名称（不含扩展名） */
+  name: string;
+  /** 快捷方式完整路径 */
+  path: string;
+  /** 桌面目录 */
+  desktopDir: string;
+  /** 快捷方式是否已存在 */
+  exists: boolean;
+  /** 桌面目录是否可写 */
+  writable: boolean;
+  /** 快捷方式当前指向的可执行文件 */
+  target?: string;
+  /** 给用户看的说明 */
+  message: string;
+}
+
+export interface ShortcutResult {
+  ok: boolean;
+  path: string;
+  message: string;
+  action: 'created' | 'updated' | 'removed' | 'failed';
+}
+
+/* ------------------------------------------------------------------ */
 /* 任务与进度                                                          */
 /* ------------------------------------------------------------------ */
 

@@ -1,3 +1,5 @@
+# appId 必须与 src/main/shortcut.ts 里的 APP_USER_MODEL_ID 保持一致，
+# 否则 Windows 上桌面快捷方式与运行中的窗口会分成两个任务栏分组。
 appId: com.bilisummary.app
 productName: BiliSummary
 copyright: Copyright © 2026 BiliSummary
@@ -16,6 +18,7 @@ files:
   - node_modules/ffmpeg-static/**/*
 
 win:
+  # 图标同时用于 exe 与桌面快捷方式
   icon: resources/icon.ico
   target:
     - target: nsis
@@ -27,9 +30,13 @@ nsis:
   oneClick: false
   perMachine: false
   allowToChangeInstallationDirectory: true
+  # 安装时自动在桌面创建快捷方式。
+  # 应用内「设置 -> 创建桌面快捷方式」是运行时的补充入口，
+  # 用于用户手动删掉快捷方式后重新创建，两者互不冲突。
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: BiliSummary
+  menuCategory: false
   artifactName: ${productName}-${version}-${arch}-setup.${ext}
 
 portable:
@@ -41,6 +48,10 @@ mac:
     - target: dmg
       arch: [x64, arm64]
   category: public.app-category.productivity
+  # dmg 默认安装到 /Applications，应用内创建的桌面快捷方式
+  # 指向 /Applications/BiliSummary.app 的符号链接。
+  # 注意：若改为 mas (Mac App Store) 目标，应用处于沙箱中，
+  # 无权写入桌面，需要额外声明 com.apple.security.files.desktop 权限。
 
 linux:
   icon: resources/icon.png
@@ -48,3 +59,9 @@ linux:
     - target: AppImage
       arch: [x64]
   category: Utility
+  desktop:
+    entry:
+      Name: BiliSummary
+      Comment: B站视频总结工具
+      Categories: Utility;
+      StartupWMClass: BiliSummary

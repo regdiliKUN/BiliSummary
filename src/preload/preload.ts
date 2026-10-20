@@ -8,6 +8,8 @@ import type {
   JobRequest,
   JobResult,
   LlmProviderKind,
+  ShortcutResult,
+  ShortcutState,
   VideoInfo,
 } from '../core/types.js';
 
@@ -46,6 +48,11 @@ export interface BiliSummaryApi {
 
   /** 弹出文件选择框，返回所选路径 */
   pickFile(kind: 'exe' | 'model' | 'binary'): Promise<{ ok: boolean; path?: string; canceled?: boolean }>;
+
+  /* 桌面快捷方式 */
+  getShortcutState(): Promise<ShortcutState>;
+  createShortcut(): Promise<ShortcutResult>;
+  removeShortcut(): Promise<ShortcutResult>;
 
   /* 应用信息 */
   getAppInfo(): Promise<{ version: string; platform: string; configPath: string }>;
@@ -100,6 +107,10 @@ const api: BiliSummaryApi = {
     ipcRenderer.invoke('file:exportTranscript', defaultName, content),
   openExternal: (url) => ipcRenderer.invoke('shell:open', url),
   pickFile: (kind) => ipcRenderer.invoke('dialog:pickFile', kind),
+
+  getShortcutState: () => ipcRenderer.invoke('shortcut:state'),
+  createShortcut: () => ipcRenderer.invoke('shortcut:create'),
+  removeShortcut: () => ipcRenderer.invoke('shortcut:remove'),
 
   getAppInfo: () => ipcRenderer.invoke('app:info'),
 };

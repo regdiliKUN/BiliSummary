@@ -12,6 +12,12 @@ import { ConfigStore, defaultConfigPath, validateConfig } from '../core/config.j
 import { createProvider } from '../core/providers/index.js';
 import { createAsrProvider } from '../core/asr/index.js';
 import { runJob } from '../core/pipeline/job.js';
+import {
+  APP_USER_MODEL_ID,
+  createDesktopShortcut,
+  getShortcutState,
+  removeDesktopShortcut,
+} from './shortcut.js';
 import type {
   AppConfig,
   JobProgress,
@@ -364,6 +370,35 @@ function registerIpc(): void {
     if (/^https?:\/\//i.test(url)) await shell.openExternal(url);
   });
 
+  // --- 桌面快捷方式 ---
+  ipcMain.handle('shortcut:state', () => getShortcutState());
+
+  ipcMain.handle('shortcut:create', async () => {
+    try {
+      return await createDesktopShortcut();
+    } catch (err) {
+      return {
+        ok: false,
+        path: '',
+        action: 'failed' as const,
+        message: `创建快捷方式时发生意外错误：${(err as Error).message}`,
+      };
+    }
+  });
+
+  ipcMain.handle('shortcut:remove', async () => {
+    try {
+      return await removeDesktopShortcut();
+    } catch (err) {
+      return {
+        ok: false,
+        path: '',
+        action: 'failed' as const,
+        message: `删除快捷方式时发生意外错误：${(err as Error).message}`,
+      };
+    }
+  });
+
   // --- 选择本地可执行文件 / 模型文件 ---
   ipcMain.handle('dialog:pickFile', async (_e, kind: 'exe' | 'model' | 'binary') => {
     const filters =
@@ -392,6 +427,7 @@ function registerIpc(): void {
     version: app.getVersion(),
     platform: process.platform,
     configPath: getConfigStore().filePath,
+    appUserModelId: APP_USER_MODEL_ID,
   }));
 }
 
@@ -410,8 +446,21 @@ if (!gotLock) {
     }
   });
 
-  void app.whenReady().then(() => {
+  void app.whenReady().then(async () => {
     // 允许通过文件关联打开 .md 摘要时直接显示
+    // 设置 AppUserModelID，Windows 上让任务栏分组与桌面快捷方式保持一致
+    if (process.platform === 'win32') {
+      app.setAppUserModelId(APP_USER_MODEL_ID);
+    }
+
+    // 打包版自检：用于验证安装后的快捷方式功能
+    if (process.env.BILISUMMARY_SELFTEST === 'shortcut') {
+      const { runShortcutSelfCheck } = await import('./shortcutSelfCheck.js');
+      await runShortcutSelfCheck();
+      app.exit(Number(process.exitCode ?? 0));
+      return;
+    }
+
     registerIpc();
     createMainWindow();
 

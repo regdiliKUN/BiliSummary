@@ -72,6 +72,9 @@ const el = {
   loginStatus: $<HTMLButtonElement>('login-status'),
   loginText: $('login-text'),
   openSettings: $<HTMLButtonElement>('open-settings'),
+  createShortcut: $<HTMLButtonElement>('create-shortcut'),
+  removeShortcut: $<HTMLButtonElement>('remove-shortcut'),
+  shortcutStatus: $('shortcut-status'),
 
   settingsModal: $('settings-modal'),
   closeSettings: $<HTMLButtonElement>('close-settings'),
@@ -571,6 +574,7 @@ function updateAsrFields(): void {
 function openSettings(): void {
   el.settingsModal.classList.remove('hidden');
   el.settingsStatus.textContent = '';
+  void refreshShortcutState();
 }
 
 function closeSettings(): void {
@@ -652,6 +656,8 @@ document.addEventListener('DOMContentLoaded', () => {
   $<HTMLButtonElement>('pick-whisper-bin').addEventListener('click', () => void pickPath('cfg-whisper-bin', 'exe'));
   $<HTMLButtonElement>('pick-whisper-model').addEventListener('click', () => void pickPath('cfg-whisper-model', 'model'));
   $<HTMLButtonElement>('pick-ffmpeg').addEventListener('click', () => void pickPath('cfg-ffmpeg', 'binary'));
+  el.createShortcut.addEventListener('click', () => void handleCreateShortcut());
+  el.removeShortcut.addEventListener('click', () => void handleRemoveShortcut());
   $<HTMLButtonElement>('cfg-login-btn').addEventListener('click', () => void handleLogin());
   $<HTMLButtonElement>('cfg-logout-btn').addEventListener('click', async () => {
     await api.logout();
@@ -701,6 +707,76 @@ async function pickPath(
     }
   } catch (err) {
     showToast(`选择文件失败：${(err as Error).message}`, 'error');
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* 桌面快捷方式                                                        */
+/* ------------------------------------------------------------------ */
+
+/** 只更新按钮的可用状态，不动状态文案。 */
+async function updateShortcutButtons(): Promise<void> {
+  try {
+    const state = await api.getShortcutState();
+    el.createShortcut.disabled = !state.supported || !state.writable;
+    el.removeShortcut.disabled = !state.exists;
+  } catch {
+    /* 忽略 */
+  }
+}
+
+/** 刷新桌面快捷方式状态并更新界面。 */
+async function refreshShortcutState(): Promise<void> {
+  try {
+    const state = await api.getShortcutState();
+    if (!state.supported) {
+      el.shortcutStatus.textContent = state.message;
+      el.createShortcut.disabled = true;
+      el.removeShortcut.disabled = true;
+      return;
+    }
+
+    el.createShortcut.disabled = !state.writable;
+    el.removeShortcut.disabled = !state.exists;
+
+    const lines: string[] = [];
+    lines.push(state.message);
+    if (state.exists && state.target) {
+      lines.push(`当前指向：${state.target}`);
+    }
+    if (!state.writable) {
+      lines.push('可尝试以管理员身份运行本应用后重试。');
+    }
+    el.shortcutStatus.textContent = lines.join('  ');
+  } catch (err) {
+    el.shortcutStatus.textContent = `读取快捷方式状态失败：${(err as Error).message}`;
+  }
+}
+
+async function handleCreateShortcut(): Promise<void> {
+  el.createShortcut.disabled = true;
+  el.shortcutStatus.textContent = '正在创建…';
+  try {
+    const res = await api.createShortcut();
+    // 先刷新按钮状态，再回填操作结果 —— 顺序反了会把结果文案覆盖掉
+    await updateShortcutButtons();
+    el.shortcutStatus.textContent = res.message;
+    showToast(res.ok ? '桌面快捷方式已就绪' : res.message, res.ok ? 'ok' : 'error');
+  } catch (err) {
+    el.shortcutStatus.textContent = `创建失败：${(err as Error).message}`;
+    showToast('创建快捷方式失败', 'error');
+  }
+}
+
+async function handleRemoveShortcut(): Promise<void> {
+  try {
+    const res = await api.removeShortcut();
+    await updateShortcutButtons();
+    el.shortcutStatus.textContent = res.message;
+    showToast(res.ok ? '已删除' : res.message, res.ok ? 'ok' : 'error');
+  } catch (err) {
+    el.shortcutStatus.textContent = `删除失败：${(err as Error).message}`;
+    showToast('删除快捷方式失败', 'error');
   }
 }
 
