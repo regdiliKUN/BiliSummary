@@ -1,7 +1,7 @@
 {
   "name": "bili-summary",
   "productName": "BiliSummary",
-  "version": "0.4.0",
+  "version": "0.4.2",
   "description": "B站视频总结工具 — 获取视频字幕/音频，调用可切换的 LLM 生成带时间戳的结构化摘要",
   "main": "dist/main/main.js",
   "author": "BiliSummary",

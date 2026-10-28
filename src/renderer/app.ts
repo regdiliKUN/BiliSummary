@@ -1691,6 +1691,13 @@ function openSettings(): void {
   el.settingsModal.classList.remove('hidden');
   el.settingsStatus.textContent = '';
   void refreshShortcutState();
+
+  if (
+    $<HTMLSelectElement>('cfg-llm-provider').value === 'deepseek' &&
+    $<HTMLInputElement>('cfg-deepseek-key').value.trim()
+  ) {
+    void scanDeepSeekModels();
+  }
 }
 
 function closeSettings(): void {
@@ -1777,7 +1784,16 @@ async function handleSaveSettings(): Promise<void> {
 /* ------------------------------------------------------------------ */
 
 document.addEventListener('DOMContentLoaded', () => {
-  $<HTMLSelectElement>('cfg-llm-provider').addEventListener('change', updateProviderFields);
+  $<HTMLSelectElement>('cfg-llm-provider').addEventListener('change', () => {
+    updateProviderFields();
+    // 切到 DeepSeek 且已填 Key 时，顺手拉一次可用模型
+    if (
+      $<HTMLSelectElement>('cfg-llm-provider').value === 'deepseek' &&
+      $<HTMLInputElement>('cfg-deepseek-key').value.trim()
+    ) {
+      void scanDeepSeekModels();
+    }
+  });
   $<HTMLSelectElement>('cfg-asr-provider').addEventListener('change', updateAsrFields);
 
   $<HTMLButtonElement>('test-llm').addEventListener('click', () => void testProvider());
@@ -1788,6 +1804,7 @@ document.addEventListener('DOMContentLoaded', () => {
   el.createShortcut.addEventListener('click', () => void handleCreateShortcut());
   el.removeShortcut.addEventListener('click', () => void handleRemoveShortcut());
   $<HTMLButtonElement>('scan-ollama').addEventListener('click', () => void scanOllamaModels());
+  $<HTMLButtonElement>('scan-deepseek').addEventListener('click', () => void scanDeepSeekModels());
   $<HTMLButtonElement>('install-whisper').addEventListener('click', () => void installWhisper());
 
   // whisper 安装进度
@@ -1851,16 +1868,63 @@ async function pickPath(inputId: string, kind: 'exe' | 'model' | 'binary'): Prom
 /* ------------------------------------------------------------------ */
 
 /** 填充 DeepSeek 模型下拉框；配置里若存了自定义模型名也要能保留。 */
-function setDeepSeekModelOptions(current: string): void {
+function setDeepSeekModelOptions(current: string, models: string[] = []): void {
   const select = $<HTMLSelectElement>('cfg-deepseek-model');
-  const known = Array.from(select.options).map((o) => o.value);
-  if (current && !known.includes(current)) {
+  select.innerHTML = '';
+
+  // 没联网检测过时给两个常见型号兜底，检测过就以接口返回的为准
+  const list = models.length ? models : ['deepseek-chat', 'deepseek-reasoner'];
+  for (const model of list) {
     const option = document.createElement('option');
-    option.value = current;
-    option.textContent = current;
+    option.value = model;
+    option.textContent = models.length ? model : `${model}（未检测）`;
     select.appendChild(option);
   }
-  select.value = current || 'deepseek-chat';
+
+  if (current && !list.includes(current)) {
+    const option = document.createElement('option');
+    option.value = current;
+    option.textContent = `${current}（当前配置，不在账号列表中）`;
+    select.appendChild(option);
+  }
+
+  select.value = current || list[0] || '';
+}
+
+/** 按当前 Key 拉取 DeepSeek 实际可用的模型。 */
+async function scanDeepSeekModels(): Promise<void> {
+  const hint = $('scan-deepseek-hint');
+  const btn = $<HTMLButtonElement>('scan-deepseek');
+  const baseUrl = $<HTMLInputElement>('cfg-deepseek-base').value.trim();
+  const apiKey = $<HTMLInputElement>('cfg-deepseek-key').value.trim();
+  const current = $<HTMLSelectElement>('cfg-deepseek-model').value;
+
+  if (!apiKey) {
+    hint.textContent = '请先填写 API Key 再检测';
+    return;
+  }
+
+  btn.disabled = true;
+  hint.textContent = '正在向 DeepSeek 查询模型列表…';
+  try {
+    const res = await api.listDeepSeekModels({ baseUrl, apiKey });
+    if (res.ok && res.models.length) {
+      setDeepSeekModelOptions(current, res.models);
+      const kept = res.models.includes(current);
+      hint.textContent = kept
+        ? `已获取 ${res.models.length} 个可用模型`
+        : `当前配置的 ${current} 不在账号列表里，已为你列出可用型号，请重新选择`;
+      if (!kept) {
+        $<HTMLSelectElement>('cfg-deepseek-model').value = res.models[0]!;
+      }
+    } else {
+      hint.textContent = `检测失败：${res.message || '接口没有返回模型列表'}`;
+    }
+  } catch (err) {
+    hint.textContent = `检测失败：${(err as Error).message}`;
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 /* ------------------------------------------------------------------ */

@@ -13,6 +13,7 @@ import { createProvider } from '../core/providers/index.js';
 import { createAsrProvider } from '../core/asr/index.js';
 import { installWhisper, type WhisperModelSize } from '../core/asr/whisperInstall.js';
 import { OllamaProvider } from '../core/providers/ollama.js';
+import { listDeepSeekModels } from '../core/providers/deepseek.js';
 import { HistoryStore } from '../core/history.js';
 import { runJob } from '../core/pipeline/job.js';
 import { runCollectionJob } from '../core/pipeline/collection.js';
@@ -524,6 +525,20 @@ function registerIpc(): void {
   });
 
   // --- Ollama 模型列表 ---
+  ipcMain.handle('deepseek:listModels', async (_e, payload?: { baseUrl?: string; apiKey?: string }) => {
+    const config = getConfig();
+    try {
+      const models = await listDeepSeekModels({
+        ...config.deepseek,
+        baseUrl: payload?.baseUrl?.trim() || config.deepseek.baseUrl,
+        apiKey: payload?.apiKey?.trim() || config.deepseek.apiKey,
+      });
+      return { ok: true, models };
+    } catch (err) {
+      return { ok: false, models: [], message: (err as Error).message };
+    }
+  });
+
   ipcMain.handle('ollama:listModels', async (_e, baseUrl?: string) => {
     const config = getConfig();
     const provider = new OllamaProvider({

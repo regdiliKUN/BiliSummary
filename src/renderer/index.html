@@ -215,10 +215,13 @@
               </label>
               <label class="field">
                 <span>模型</span>
-                <select id="cfg-deepseek-model" class="input select">
-                  <option value="deepseek-chat">deepseek-chat（V3.x，快，长文摘要首选）</option>
-                  <option value="deepseek-reasoner">deepseek-reasoner（R1 推理，慢但更细）</option>
-                </select>
+                <div class="field-with-btn">
+                  <select id="cfg-deepseek-model" class="input select"></select>
+                  <button id="scan-deepseek" class="btn btn-secondary btn-sm" type="button">检测可用模型</button>
+                </div>
+                <p id="scan-deepseek-hint" class="hint-text">
+                  点「检测可用模型」会按你的 Key 拉取账号实际可用的型号（DeepSeek 会随版本调整型号名）
+                </p>
               </label>
               <div class="field-row">
                 <label class="field">

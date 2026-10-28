@@ -52,7 +52,12 @@ export class DeepSeekProvider implements LlmProvider {
     if (!this.cfg.apiKey) return { ok: false, message: '未填写 API Key' };
     try {
       const res = await this.inner.healthCheck();
-      return res.ok ? res : { ok: false, message: translateDeepSeekError(res.message) };
+      if (res.ok) return res;
+      let message = translateDeepSeekError(res.message);
+      if (/不在该接口的模型列表中/.test(message)) {
+        message += '（说明 Key 是通的，只是型号过期；点「检测可用模型」按你的 Key 重新拉列表即可）';
+      }
+      return { ok: false, message };
     } catch (err) {
       return { ok: false, message: translateDeepSeekError((err as Error).message) };
     }
@@ -75,4 +80,37 @@ export function translateDeepSeekError(message: string): string {
     return `无法连接 DeepSeek 接口（${text.slice(0, 120)}），请检查网络或 Base URL`;
   }
   return text;
+}
+
+/**
+ * 拉取这个 Key 实际可用的模型名。
+ *
+ * DeepSeek 会随版本调整型号（deepseek-chat / deepseek-reasoner 之后又出过
+ * flash、v4-pro 等），把候选写死在 UI 里必然过期，所以让接口自己报。
+ */
+export async function listDeepSeekModels(
+  cfg: DeepSeekProviderConfig,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string[]> {
+  const base = (cfg.baseUrl || 'https://api.deepseek.com/v1').replace(/\/+$/, '');
+  const headers: Record<string, string> = {};
+  if (cfg.apiKey) headers.Authorization = `Bearer ${cfg.apiKey}`;
+
+  const res = await fetchImpl(`${base}/models`, { headers });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(translateDeepSeekError(`HTTP ${res.status}: ${text.slice(0, 200)}`));
+  }
+
+  let json: any;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    throw new Error(`接口返回的不是 JSON：${text.slice(0, 120)}`);
+  }
+
+  return (json?.data ?? [])
+    .map((m: any) => String(m?.id ?? '').trim())
+    .filter(Boolean)
+    .sort();
 }

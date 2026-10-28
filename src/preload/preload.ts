@@ -61,6 +61,10 @@ export interface BiliSummaryApi {
   checkProvider(kind: LlmProviderKind): Promise<{ ok: boolean; message: string }>;
   checkAsr(): Promise<{ ok: boolean; message: string }>;
   listOllamaModels(baseUrl?: string): Promise<{ ok: boolean; models: string[]; message?: string }>;
+  listDeepSeekModels(payload?: {
+    baseUrl?: string;
+    apiKey?: string;
+  }): Promise<{ ok: boolean; models: string[]; message?: string }>;
 
   /* ASR 一键安装 */
   installAsr(model: string): Promise<{ ok: boolean; message: string; binaryPath?: string; modelPath?: string }>;
@@ -145,6 +149,7 @@ const api: BiliSummaryApi = {
   checkProvider: (kind) => ipcRenderer.invoke('provider:check', kind),
   checkAsr: () => ipcRenderer.invoke('asr:check'),
   listOllamaModels: (baseUrl) => ipcRenderer.invoke('ollama:listModels', baseUrl),
+  listDeepSeekModels: (payload) => ipcRenderer.invoke('deepseek:listModels', payload),
   installAsr: (model) => ipcRenderer.invoke('asr:install', model),
   cancelAsrInstall: () => ipcRenderer.invoke('asr:cancelInstall'),
   onAsrInstallProgress: (cb) => {

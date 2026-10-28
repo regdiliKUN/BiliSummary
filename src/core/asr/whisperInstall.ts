@@ -6,10 +6,10 @@
  */
 import { spawn } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
-import { mkdir, readdir, rename, rm, stat } from 'node:fs/promises';
+import { mkdir, cp, readdir, rename, rm, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, relative } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { verifyBinary } from './whisperCpp.js';
@@ -86,31 +86,55 @@ async function findRelease(
   return null;
 }
 
-/** 带进度回调的下载。 */
+/** 带进度回调的下载；下载不完整会自动重试。 */
 async function downloadWithProgress(
   url: string,
   dest: string,
   onProgress?: (received: number, total: number) => void,
   signal?: AbortSignal,
+  attempts = 3,
 ): Promise<void> {
-  const res = await fetch(url, {
-    headers: { 'User-Agent': 'BiliSummary' },
-    signal,
-    redirect: 'follow',
-  });
-  if (!res.ok) {
-    throw new Error(`下载失败 HTTP ${res.status}`);
+  let lastError: Error | null = null;
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const res = await fetch(url, {
+        headers: { 'User-Agent': 'BiliSummary' },
+        signal,
+        redirect: 'follow',
+      });
+      if (!res.ok) {
+        throw new Error(`下载失败 HTTP ${res.status}`);
+      }
+      const total = Number(res.headers.get('content-length') ?? 0);
+      let received = 0;
+
+      const source = Readable.fromWeb(res.body as any);
+      source.on('data', (chunk: Buffer) => {
+        received += chunk.length;
+        onProgress?.(received, total);
+      });
+
+      await pipeline(source, createWriteStream(dest));
+
+      // 连接中途断开时 pipeline 可能「正常」结束，但文件是残的：
+      // 这种残包要到 tar 解压阶段才会报 ZIP decompression failed，
+      // 并留下半截 DLL，所以下载完必须自己核对长度
+      if (total > 0 && received !== total) {
+        throw new Error(`下载不完整：${received}/${total} 字节`);
+      }
+      return;
+    } catch (err) {
+      lastError = err as Error;
+      await rm(dest, { force: true }).catch(() => {});
+      if (signal?.aborted) throw new Error('已取消');
+      if (attempt < attempts) {
+        await new Promise((r) => setTimeout(r, 800 * attempt));
+      }
+    }
   }
-  const total = Number(res.headers.get('content-length') ?? 0);
-  let received = 0;
 
-  const source = Readable.fromWeb(res.body as any);
-  source.on('data', (chunk: Buffer) => {
-    received += chunk.length;
-    onProgress?.(received, total);
-  });
-
-  await pipeline(source, createWriteStream(dest));
+  throw new Error(`${lastError?.message ?? '下载失败'}（已重试 ${attempts} 次）`);
 }
 
 /** 解压（Windows 用内置 bsdtar，Linux 用 tar）。 */
@@ -208,33 +232,56 @@ export async function installWhisper(params: {
       signal,
     );
 
-    // --- 3. 解压 ---
+    // --- 3. 解压到临时目录，校验通过后才写进安装目录 ---
+    // 直接往 binDir 解压的风险：残包解到一半会让目录里留下半截 DLL，
+    // 之后每次转写都以 0xC0000139 崩掉，比装不上更难排查。
     onProgress?.({ percent: 27, message: '正在解压…', stage: 'extract' });
-    await mkdir(binDir, { recursive: true });
-    await extract(archivePath, binDir);
-
-    const exeName = process.platform === 'win32' ? 'whisper-cli.exe' : 'whisper-cli';
-    const binaryPath = await findBinary(binDir, exeName);
-    if (!binaryPath) {
+    const stageDir = join(tempDir, 'whisper');
+    await mkdir(stageDir, { recursive: true });
+    try {
+      await extract(archivePath, stageDir);
+    } catch (err) {
       return {
         ok: false,
-        message: `解压完成但没找到 ${exeName}，目录：${binDir}`,
+        message:
+          `解压失败：${(err as Error).message}。` +
+          '通常是安装包没下载完整（网络中断），请检查网络后重试；已安装的内容未被改动。',
       };
     }
 
-    // --- 3.5 启动自检 ---
-    // 解压「成功」不代表能跑：DLL 解压不完整时进程会带着 0xC0000139 立刻退出，
+    const exeName = process.platform === 'win32' ? 'whisper-cli.exe' : 'whisper-cli';
+    const stagedBinary = await findBinary(stageDir, exeName);
+    if (!stagedBinary) {
+      return {
+        ok: false,
+        message: `解压完成但没找到 ${exeName}，目录：${stageDir}`,
+      };
+    }
+
+    // --- 3.5 启动自检（在临时目录里做，坏包进不了安装目录）---
+    // 解压「成功」不代表能跑：DLL 写到一半时进程会带着 0xC0000139 立刻退出，
     // 直到用户转写时才暴露出“whisper 退出码 xxx：”这种空信息。
     onProgress?.({ percent: 29, message: '正在校验 whisper 可执行性…', stage: 'extract' });
-    const probe = await verifyBinary(binaryPath);
+    const probe = await verifyBinary(stagedBinary);
     if (!probe.ok) {
       return {
         ok: false,
         message:
-          `whisper 已解压但无法启动：${probe.message}。` +
-          `请删除 ${binDir} 后重新安装；若仍然失败，检查杀毒软件是否拦截了 DLL。`,
+          `whisper 解压后无法启动：${probe.message}。` +
+          '请检查杀毒软件是否拦截了 DLL，或稍后重试；已安装的内容未被改动。',
       };
     }
+
+    // 校验通过后整体替换旧目录，避免新旧 DLL 混在一起
+    await rm(binDir, { recursive: true, force: true });
+    await mkdir(dirname(binDir), { recursive: true });
+    try {
+      await rename(stageDir, binDir);
+    } catch {
+      // 跨盘时 rename 不可用，退化为复制
+      await cp(stageDir, binDir, { recursive: true });
+    }
+    const binaryPath = join(binDir, relative(stageDir, stagedBinary));
 
     // --- 4. 下载模型 ---
     const modelInfo = WHISPER_MODELS.find((m) => m.id === model) ?? WHISPER_MODELS[2]!;

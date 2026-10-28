@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { DeepSeekProvider, translateDeepSeekError } from '../src/core/providers/deepseek.js';
+import { DeepSeekProvider, listDeepSeekModels, translateDeepSeekError } from '../src/core/providers/deepseek.js';
 import { describeExitCode } from '../src/core/asr/whisperCpp.js';
 import { DEFAULT_CONFIG, resolveModelProfile, validateConfig } from '../src/core/config.js';
 import type { DeepSeekProviderConfig } from '../src/core/types.js';
@@ -67,8 +67,42 @@ describe('DeepSeek 供应商', () => {
   });
 });
 
-describe('DeepSeek 错误翻译', () => {
-  it('401 说清是 Key 无效', () => {
+describe('DeepSeek 模型列表', () => {
+  it('按 Key 拉取账号可用型号', async () => {
+    const fetchImpl = vi.fn(async () =>
+      okResponse({ data: [{ id: 'deepseek-v4-pro' }, { id: 'deepseek-flash' }] }),
+    );
+    const models = await listDeepSeekModels(makeCfg(), fetchImpl as never);
+
+    expect(models).toEqual(['deepseek-flash', 'deepseek-v4-pro']);
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('https://api.deepseek.com/v1/models');
+    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer sk-test');
+  });
+
+  it('401 时提示 Key 无效', async () => {
+    const fetchImpl = vi.fn(
+      async () => new Response('{"error":"Authentication Fails"}', { status: 401 }),
+    );
+    await expect(listDeepSeekModels(makeCfg(), fetchImpl as never)).rejects.toThrow(/API Key 无效/);
+  });
+
+  it('型号过期时提示去检测模型，而不是说 Key 错', async () => {
+    const fetchImpl = vi.fn(async () => okResponse({ data: [{ id: 'deepseek-flash' }] }));
+    const provider = new DeepSeekProvider(
+      makeCfg({ model: 'deepseek-reasoner' }),
+      fetchImpl as never,
+    );
+    const res = await provider.healthCheck();
+
+    expect(res.ok).toBe(false);
+    expect(res.message).toMatch(/deepseek-reasoner/);
+    expect(res.message).toMatch(/检测可用模型/);
+    expect(res.message).not.toMatch(/API Key 无效/);
+  });
+});
+
+describe('DeepSeek 错误翻译', () => {  it('401 说清是 Key 无效', () => {
     expect(translateDeepSeekError('HTTP 401: Authentication Fails')).toMatch(/API Key 无效/);
   });
 
