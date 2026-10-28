@@ -208,80 +208,98 @@ export async function installWhisper(params: {
       };
     }
 
-    // --- 2. 下载程序 ---
+    // --- 2~3. 下载 + 解压 + 自检（任一步失败都整体重来）---
     await mkdir(tempDir, { recursive: true });
     const archivePath = join(tempDir, basename(platform.asset));
-    onProgress?.({
-      percent: 5,
-      message: `正在下载 whisper.cpp（${release.tag}）…`,
-      stage: 'download-binary',
-    });
-
-    await downloadWithProgress(
-      release.url,
-      archivePath,
-      (received, total) => {
-        if (total > 0) {
-          onProgress?.({
-            percent: 5 + Math.round((received / total) * 20),
-            message: `正在下载 whisper.cpp… ${(received / 1048576).toFixed(1)}/${(total / 1048576).toFixed(1)} MB`,
-            stage: 'download-binary',
-          });
-        }
-      },
-      signal,
-    );
-
-    // --- 3. 解压到临时目录，校验通过后才写进安装目录 ---
-    // 直接往 binDir 解压的风险：残包解到一半会让目录里留下半截 DLL，
-    // 之后每次转写都以 0xC0000139 崩掉，比装不上更难排查。
-    onProgress?.({ percent: 27, message: '正在解压…', stage: 'extract' });
-    const stageDir = join(tempDir, 'whisper');
-    await mkdir(stageDir, { recursive: true });
-    try {
-      await extract(archivePath, stageDir);
-    } catch (err) {
-      return {
-        ok: false,
-        message:
-          `解压失败：${(err as Error).message}。` +
-          '通常是安装包没下载完整（网络中断），请检查网络后重试；已安装的内容未被改动。',
-      };
-    }
-
     const exeName = process.platform === 'win32' ? 'whisper-cli.exe' : 'whisper-cli';
-    const stagedBinary = await findBinary(stageDir, exeName);
-    if (!stagedBinary) {
-      return {
-        ok: false,
-        message: `解压完成但没找到 ${exeName}，目录：${stageDir}`,
-      };
+    const stageDir = join(tempDir, 'whisper');
+
+    // 已经装好且能跑就直接复用，别为了同一份二进制反复下载
+    let binaryPath: string | null = null;
+    const existingBinary = await findBinary(binDir, exeName).catch(() => null);
+    if (existingBinary) {
+      const existingProbe = await verifyBinary(existingBinary);
+      if (existingProbe.ok) {
+        binaryPath = existingBinary;
+        onProgress?.({
+          percent: 29,
+          message: '检测到已安装且可用的 whisper，跳过下载',
+          stage: 'extract',
+        });
+      }
     }
 
-    // --- 3.5 启动自检（在临时目录里做，坏包进不了安装目录）---
-    // 解压「成功」不代表能跑：DLL 写到一半时进程会带着 0xC0000139 立刻退出，
-    // 直到用户转写时才暴露出“whisper 退出码 xxx：”这种空信息。
-    onProgress?.({ percent: 29, message: '正在校验 whisper 可执行性…', stage: 'extract' });
-    const probe = await verifyBinary(stagedBinary);
-    if (!probe.ok) {
+    // 残包、写入被拦、DLL 内容被改写……这些换一次往往就好了，
+    // 所以「下载 → 解压 → 自检」整体重试，而不是只重试下载那一段。
+    let lastError: Error | null = null;
+
+    for (let attempt = 1; attempt <= 3 && !binaryPath; attempt++) {
+      if (signal?.aborted) return { ok: false, message: '已取消' };
+      try {
+        onProgress?.({
+          percent: 5,
+          message:
+            attempt === 1
+              ? `正在下载 whisper.cpp（${release.tag}）…`
+              : `安装包校验未通过，正在重新下载（第 ${attempt}/3 次）…`,
+          stage: 'download-binary',
+        });
+
+        await downloadWithProgress(
+          release.url,
+          archivePath,
+          (received, total) => {
+            if (total > 0) {
+              onProgress?.({
+                percent: 5 + Math.round((received / total) * 20),
+                message: `正在下载 whisper.cpp… ${(received / 1048576).toFixed(1)}/${(total / 1048576).toFixed(1)} MB`,
+                stage: 'download-binary',
+              });
+            }
+          },
+          signal,
+          1, // 内层不重试，由这一层统一重来
+        );
+
+        onProgress?.({ percent: 27, message: '正在解压…', stage: 'extract' });
+        await rm(stageDir, { recursive: true, force: true });
+        await mkdir(stageDir, { recursive: true });
+        await extract(archivePath, stageDir);
+
+        const found = await findBinary(stageDir, exeName);
+        if (!found) throw new Error(`解压后没找到 ${exeName}`);
+
+        onProgress?.({ percent: 29, message: '正在校验 whisper 可执行性…', stage: 'extract' });
+        const probe = await verifyBinary(found);
+        if (!probe.ok) throw new Error(probe.message);
+
+        // 校验通过后整体替换旧目录，避免新旧 DLL 混在一起
+        await rm(binDir, { recursive: true, force: true });
+        await mkdir(dirname(binDir), { recursive: true });
+        try {
+          await rename(stageDir, binDir);
+        } catch {
+          // 跨盘时 rename 不可用，退化为复制
+          await cp(stageDir, binDir, { recursive: true });
+        }
+        binaryPath = join(binDir, relative(stageDir, found));
+      } catch (err) {
+        lastError = err as Error;
+        if (signal?.aborted) return { ok: false, message: '已取消' };
+        await rm(archivePath, { force: true }).catch(() => {});
+      }
+    }
+
+    if (!binaryPath) {
       return {
         ok: false,
         message:
-          `whisper 解压后无法启动：${probe.message}。` +
-          '请检查杀毒软件是否拦截了 DLL，或稍后重试；已安装的内容未被改动。',
+          `whisper 安装失败（已自动重试 3 次）：${lastError?.message ?? '未知错误'}。` +
+          '常见原因是网络中断导致安装包不完整，或杀毒软件拦截了 DLL 写入。' +
+          '可暂时关闭杀毒实时防护后重试，或手动下载 whisper-bin-x64.zip 解压到 ' +
+          `${binDir}。已安装的内容未被改动。`,
       };
     }
-
-    // 校验通过后整体替换旧目录，避免新旧 DLL 混在一起
-    await rm(binDir, { recursive: true, force: true });
-    await mkdir(dirname(binDir), { recursive: true });
-    try {
-      await rename(stageDir, binDir);
-    } catch {
-      // 跨盘时 rename 不可用，退化为复制
-      await cp(stageDir, binDir, { recursive: true });
-    }
-    const binaryPath = join(binDir, relative(stageDir, stagedBinary));
 
     // --- 4. 下载模型 ---
     const modelInfo = WHISPER_MODELS.find((m) => m.id === model) ?? WHISPER_MODELS[2]!;
