@@ -7,7 +7,7 @@
 /* 配置                                                                */
 /* ------------------------------------------------------------------ */
 
-export type LlmProviderKind = 'openai' | 'ollama' | 'bilibili';
+export type LlmProviderKind = 'openai' | 'deepseek' | 'ollama' | 'bilibili';
 export type AsrProviderKind = 'none' | 'openai' | 'whisper-cpp';
 export type TranscriptSource = 'subtitle' | 'asr' | 'bilibili-ai' | 'none';
 
@@ -20,6 +20,14 @@ export interface OpenAiProviderConfig {
   /** 每次请求的最大上下文（字符数），用于分块。 */
   contextChars: number;
 }
+
+/**
+ * DeepSeek 官方 API 配置。
+ *
+ * 协议与 OpenAI 完全一致（/chat/completions），但 Key 与端点独立，
+ * 单独成项后用户不必在「OpenAI 兼容」里反复改 Base URL。
+ */
+export type DeepSeekProviderConfig = OpenAiProviderConfig;
 
 export interface OllamaProviderConfig {
   baseUrl: string;
@@ -60,6 +68,7 @@ export interface WhisperCppConfig {
 export interface AppConfig {
   llmProvider: LlmProviderKind;
   openai: OpenAiProviderConfig;
+  deepseek: DeepSeekProviderConfig;
   ollama: OllamaProviderConfig;
   bilibili: BilibiliProviderConfig;
   asrProvider: AsrProviderKind;
@@ -73,12 +82,18 @@ export interface AppConfig {
   outputDir: string;
   /** 是否把字幕全文一并导出 */
   exportTranscript: boolean;
-  /** 并发请求数（分块摘要阶段） */
+  /** 单个视频内部的并发请求数（分块摘要阶段） */
   concurrency: number;
+  /** 视频级并发数：同时处理几个视频 */
+  videoConcurrency: number;
   /** 弹幕数量上限，0 表示不抓取 */
   danmakuLimit: number;
   /** 抓取弹幕是否启用 */
   useDanmaku: boolean;
+  /** 生成完成后是否写入历史记录 */
+  saveHistory: boolean;
+  /** 历史记录最多保留条数 */
+  historyLimit: number;
 }
 
 /* ------------------------------------------------------------------ */
@@ -124,6 +139,44 @@ export interface VideoInfo {
   url: string;
   /** 原始完整链接 */
   rawUrl: string;
+  /** 所属合集（B 站「合集」= ugc_season），没有则为空 */
+  collection?: VideoCollection | null;
+}
+
+/* ------------------------------------------------------------------ */
+/* 合集                                                                */
+/* ------------------------------------------------------------------ */
+
+/** 合集里的一集。 */
+export interface CollectionEpisode {
+  bvid: string;
+  aid: number;
+  cid?: number;
+  /** 标题（优先用视频本身的标题） */
+  title: string;
+  duration: number;
+  cover: string;
+  pubdate: number;
+  /** 所属分节标题（合集里可能有多个分节） */
+  section?: string;
+  /** 在合集中的序号，从 1 开始 */
+  index: number;
+}
+
+export interface VideoCollection {
+  /** season_id */
+  id: number;
+  title: string;
+  cover: string;
+  /** UP 主 mid */
+  mid: number;
+  /** 合集简介 */
+  intro: string;
+  /** 合集总集数（可能大于 episodes.length，超大合集需要分页补全） */
+  total: number;
+  episodes: CollectionEpisode[];
+  /** 是否已拿到全部集数 */
+  complete: boolean;
 }
 
 /* ------------------------------------------------------------------ */
@@ -331,4 +384,95 @@ export interface JobResult {
   danmaku: DanmakuItem[];
   markdown: string;
   savedPath?: string;
+  /** 合并生成时才有：本次覆盖的合集信息 */
+  collection?: CollectionResultInfo;
+}
+
+/** 合集合并生成的结果描述。 */
+export interface CollectionResultInfo {
+  id: number;
+  title: string;
+  /** 合集总集数 */
+  total: number;
+  /** 本次覆盖的集数 */
+  covered: number;
+  episodes: CollectionResultEpisode[];
+}
+
+export interface CollectionResultEpisode {
+  bvid: string;
+  title: string;
+  duration: number;
+  url: string;
+  /** 在合集中的序号，从 1 开始 */
+  index: number;
+  /** 在合并时间轴上的起点（秒），用于把时间戳还原成「第几集 几分几秒」 */
+  start: number;
+  end: number;
+  /** 该集字幕来源 */
+  transcriptSource: TranscriptSource;
+  /** 该集字幕条数，0 表示没取到字幕 */
+  segmentCount: number;
+}
+
+/** 合集合并生成请求。 */
+export interface CollectionJobRequest {
+  /** 合集名称（用于标题与提示词） */
+  title: string;
+  /** 合集 id，仅用于记录 */
+  collectionId?: number;
+  /** 合集总集数 */
+  total?: number;
+  /** 勾选要合并的集（只处理这些） */
+  episodes: { url: string; part?: number; title?: string }[];
+  source?: TranscriptSource;
+  provider?: LlmProviderKind;
+}
+
+/** 批量任务：由渲染进程分配好 id，主进程按 id 回报进度。 */
+export interface BatchTaskInput {
+  taskId: string;
+  request: JobRequest;
+}
+
+export interface BatchStartPayload {
+  tasks: BatchTaskInput[];
+  /** 视频级并发数，留空则用配置里的值 */
+  concurrency?: number;
+}
+
+/* ------------------------------------------------------------------ */
+/* 历史记录                                                            */
+/* ------------------------------------------------------------------ */
+
+/** 历史记录索引项（轻量，用于列表展示）。 */
+export interface HistoryEntry {
+  id: string;
+  bvid: string;
+  /** 分P，1 表示 P1 或单P视频 */
+  part: number;
+  title: string;
+  url: string;
+  cover: string;
+  owner: string;
+  duration: number;
+  /** 生成时间 ISO 字符串 */
+  createdAt: string;
+  model: string;
+  provider: string;
+  transcriptSource: TranscriptSource;
+  tldr: string;
+  keyPoints: string[];
+  favorite: boolean;
+  /** Markdown 字符数，用于列表展示体积 */
+  markdownLength: number;
+  /** 合集合并生成的记录：合集名与覆盖集数 */
+  collectionTitle?: string;
+  episodeCount?: number;
+}
+
+/** 历史记录完整内容。 */
+export interface HistoryRecord {
+  entry: HistoryEntry;
+  result: JobResult;
 }

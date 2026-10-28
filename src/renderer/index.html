@@ -17,9 +17,17 @@
           <span class="brand-logo">BS</span>
           <div>
             <h1>BiliSummary</h1>
-            <p class="brand-sub">B站视频总结工具</p>
+            <p class="brand-sub">B站视频批量总结工具</p>
           </div>
         </div>
+
+        <nav class="view-nav">
+          <button class="nav-btn active" data-view="workspace" type="button">工作台</button>
+          <button class="nav-btn" data-view="history" type="button">
+            历史记录<span id="history-count" class="badge hidden">0</span>
+          </button>
+        </nav>
+
         <div class="topbar-actions">
           <button id="login-status" class="btn btn-ghost" type="button">
             <span class="dot"></span><span id="login-text">未登录</span>
@@ -28,148 +36,115 @@
         </div>
       </header>
 
-      <main class="content">
-        <!-- 输入区 -->
+      <!-- ============ 工作台 ============ -->
+      <main class="content" id="view-workspace">
+        <!-- 批量导入 -->
         <section class="card">
           <div class="card-head">
-            <h2>视频链接</h2>
+            <h2>批量导入</h2>
+            <label class="checkbox-field inline">
+              <input id="skip-history" type="checkbox" checked />
+              <span>跳过历史里已有的视频</span>
+            </label>
           </div>
-          <div class="row">
-            <input
-              id="url-input"
-              class="input"
-              type="text"
-              placeholder="粘贴 B 站视频链接或 BV 号，例如 https://www.bilibili.com/video/BV1xx411c7mD"
-              autocomplete="off"
-              spellcheck="false"
-            />
-            <button id="fetch-info" class="btn btn-secondary" type="button">获取信息</button>
+          <textarea
+            id="url-input"
+            class="input textarea url-textarea"
+            rows="4"
+            placeholder="每行一条，可一次粘贴多条：&#10;https://www.bilibili.com/video/BV1xx411c7mD&#10;b23.tv 短链、BV/av 号、整段分享文案都能识别（Ctrl+Enter 导入）"
+            spellcheck="false"
+          ></textarea>
+          <div class="import-actions">
+            <button id="import-btn" class="btn btn-secondary" type="button">解析并加入队列</button>
+            <button id="paste-btn" class="btn btn-ghost" type="button">从剪贴板粘贴</button>
+            <span id="import-hint" class="hint-text">
+              支持多行链接、BV/av 号、b23 短链与分享文案，自动去重
+            </span>
           </div>
+        </section>
 
-          <div id="video-card" class="video-card hidden">
-            <img id="video-cover" class="cover" alt="" />
-            <div class="video-meta">
-              <a id="video-title" class="video-title" href="#" target="_blank"></a>
-              <div id="video-stats" class="video-stats"></div>
-              <div class="video-controls">
-                <label class="field">
-                  <span>分P</span>
-                  <select id="part-select" class="input select"></select>
-                </label>
-                <label class="field">
-                  <span>摘要来源</span>
-                  <select id="source-select" class="input select">
-                    <option value="auto">自动（字幕优先）</option>
-                    <option value="subtitle">仅官方字幕</option>
-                    <option value="asr">仅语音识别</option>
-                    <option value="bilibili-ai">仅B站官方总结</option>
-                  </select>
-                </label>
-                <label class="field">
-                  <span>模型来源</span>
-                  <select id="provider-select" class="input select"></select>
-                </label>
-              </div>
+        <!-- 任务队列 -->
+        <section class="card">
+          <div class="card-head queue-head">
+            <h2>
+              任务队列
+              <span id="queue-summary" class="queue-summary">空</span>
+            </h2>
+            <div class="head-actions">
+              <label class="inline-field">
+                <span>摘要来源</span>
+                <select id="source-select" class="input select select-sm">
+                  <option value="auto">自动（字幕优先）</option>
+                  <option value="subtitle">仅官方字幕</option>
+                  <option value="asr">仅语音识别</option>
+                  <option value="bilibili-ai">仅B站官方总结</option>
+                </select>
+              </label>
+              <label class="inline-field">
+                <span>模型</span>
+                <select id="provider-select" class="input select select-sm"></select>
+              </label>
+              <label class="inline-field">
+                <span>并发</span>
+                <input id="video-concurrency" class="input input-tiny" type="number" min="1" max="6" step="1" />
+              </label>
+              <button id="cancel-all" class="btn btn-ghost btn-sm" type="button">取消全部</button>
+              <button id="clear-done" class="btn btn-ghost btn-sm" type="button">清除已完成</button>
+              <button id="export-all" class="btn btn-ghost btn-sm" type="button">导出全部</button>
             </div>
           </div>
-        </section>
 
-        <!-- 进度区 -->
-        <section id="progress-card" class="card hidden">
-          <div class="card-head">
-            <h2>生成进度</h2>
-            <button id="cancel-job" class="btn btn-ghost btn-sm" type="button">取消</button>
+          <div id="queue-list" class="queue-list"></div>
+          <div id="queue-empty" class="queue-empty">
+            <p>队列是空的。</p>
+            <p class="hint-text">
+              把多条视频链接粘到上面，点「解析并加入队列」，再点底部的「开始生成」即可同时处理多个视频。
+            </p>
           </div>
-          <div class="progress-wrap">
-            <div class="progress-bar"><div id="progress-fill" class="progress-fill"></div></div>
-            <span id="progress-percent" class="progress-percent">0%</span>
-          </div>
-          <p id="progress-message" class="progress-message"></p>
-          <p id="progress-detail" class="progress-detail"></p>
-        </section>
-
-        <!-- 错误 -->
-        <section id="error-card" class="card card-error hidden">
-          <div class="card-head"><h2>出错了</h2></div>
-          <p id="error-message" class="error-message"></p>
-          <p id="error-hint" class="error-hint"></p>
         </section>
 
         <!-- 结果 -->
-        <section id="result-card" class="card hidden">
-          <div class="card-head">
-            <h2>摘要结果</h2>
-            <div class="head-actions">
-              <button id="copy-md" class="btn btn-ghost btn-sm" type="button">复制 Markdown</button>
-              <button id="save-md" class="btn btn-ghost btn-sm" type="button">保存</button>
-              <button id="export-transcript" class="btn btn-ghost btn-sm" type="button">导出字幕</button>
-            </div>
-          </div>
-
-          <div class="tabs">
-            <button class="tab active" data-tab="summary" type="button">摘要</button>
-            <button class="tab" data-tab="markdown" type="button">Markdown</button>
-            <button class="tab" data-tab="transcript" type="button">字幕</button>
-          </div>
-
-          <div id="tab-summary" class="tab-panel active">
-            <div class="summary-block">
-              <h3>一句话总结</h3>
-              <p id="summary-tldr" class="tldr"></p>
-            </div>
-            <div class="summary-block">
-              <h3>关键要点</h3>
-              <ul id="summary-points" class="points"></ul>
-            </div>
-            <div class="summary-block">
-              <h3>章节速览</h3>
-              <ul id="summary-outline" class="outline"></ul>
-            </div>
-            <div class="summary-block">
-              <h3>分段摘要</h3>
-              <div id="summary-segments" class="segments"></div>
-            </div>
-            <div id="insights-block" class="summary-block hidden">
-              <h3>关键洞察</h3>
-              <ul id="summary-insights" class="points"></ul>
-            </div>
-            <div id="warnings-block" class="summary-block warning-block hidden">
-              <h3>注意</h3>
-              <ul id="summary-warnings" class="points"></ul>
-            </div>
-            <p id="summary-meta" class="summary-meta"></p>
-          </div>
-
-          <div id="tab-markdown" class="tab-panel">
-            <pre id="markdown-view" class="markdown-view"></pre>
-          </div>
-
-          <div id="tab-transcript" class="tab-panel">
-            <div id="transcript-view" class="transcript"></div>
-          </div>
-        </section>
-
-        <!-- 空闲提示 -->
-        <section id="empty-card" class="card empty-card">
-          <h2>开始使用</h2>
-          <ol class="steps">
-            <li>在上方粘贴 B 站视频链接</li>
-            <li>点击「获取信息」确认视频与分P</li>
-            <li>选择摘要来源，点击「生成摘要」</li>
-          </ol>
-          <p class="tip">
-            提示：在「设置」里登录 B 站可以获取官方字幕（准确率最高）；没有字幕时可配置
-            ASR（OpenAI 兼容接口或 whisper.cpp）自动转写。
-          </p>
-        </section>
+        <div id="result-host" class="result-host"></div>
       </main>
 
-      <!-- 生成按钮 -->
+      <!-- ============ 历史记录 ============ -->
+      <main class="content hidden" id="view-history">
+        <section class="card">
+          <div class="card-head">
+            <h2>
+              历史记录
+              <span id="history-summary" class="queue-summary"></span>
+            </h2>
+            <div class="head-actions">
+              <input id="history-search" class="input search-input" type="text" placeholder="搜索标题 / BV号 / UP主" />
+              <select id="history-filter" class="input select select-sm">
+                <option value="all">全部</option>
+                <option value="fav">只看收藏</option>
+              </select>
+              <button id="history-export-merged" class="btn btn-ghost btn-sm" type="button">合并导出</button>
+              <button id="history-export-folder" class="btn btn-ghost btn-sm" type="button">按文件导出</button>
+              <button id="history-open-folder" class="btn btn-ghost btn-sm" type="button">打开目录</button>
+              <button id="history-clear" class="btn btn-ghost btn-sm" type="button">清空</button>
+            </div>
+          </div>
+
+          <div id="history-list" class="history-list"></div>
+          <div id="history-empty" class="queue-empty">
+            <p>还没有历史记录。</p>
+            <p class="hint-text">生成成功的摘要会自动保存在本机，随时可以回看或再次导出。</p>
+          </div>
+        </section>
+
+        <div id="history-detail-host" class="result-host"></div>
+      </main>
+
+      <!-- 底部操作条 -->
       <div class="action-bar">
-        <button id="start-job" class="btn btn-primary btn-lg" type="button" disabled>
-          生成摘要
-        </button>
-        <span id="action-hint" class="action-hint">请先获取视频信息</span>
+        <button id="start-all" class="btn btn-primary btn-lg" type="button" disabled>开始生成</button>
+        <div class="overall">
+          <div class="progress-bar overall-bar"><div id="overall-fill" class="progress-fill"></div></div>
+          <span id="overall-text" class="action-hint">队列为空</span>
+        </div>
       </div>
     </div>
 
@@ -190,6 +165,7 @@
                 <span>供应商</span>
                 <select id="cfg-llm-provider" class="input select">
                   <option value="openai">OpenAI 兼容接口</option>
+                  <option value="deepseek">DeepSeek 官方 API</option>
                   <option value="ollama">Ollama 本地模型</option>
                   <option value="bilibili">B站官方 AI 总结</option>
                 </select>
@@ -201,7 +177,7 @@
             <div id="cfg-openai" class="provider-fields">
               <label class="field">
                 <span>Base URL</span>
-                <input id="cfg-openai-base" class="input" type="text" placeholder="https://api.deepseek.com/v1" />
+                <input id="cfg-openai-base" class="input" type="text" placeholder="https://api.openai.com/v1" />
               </label>
               <label class="field">
                 <span>API Key</span>
@@ -209,7 +185,7 @@
               </label>
               <label class="field">
                 <span>模型</span>
-                <input id="cfg-openai-model" class="input" type="text" placeholder="deepseek-chat" />
+                <input id="cfg-openai-model" class="input" type="text" placeholder="gpt-4o-mini" />
               </label>
               <div class="field-row">
                 <label class="field">
@@ -221,6 +197,44 @@
                   <input id="cfg-openai-budget" class="input" type="number" step="500" min="2000" />
                 </label>
               </div>
+              <p class="hint-text">
+                任何实现了 <code>/chat/completions</code> 的服务都能填在这里：Kimi、智谱 GLM、豆包、
+                硅基流动、Groq、vLLM、LM Studio 等。Base URL 要带版本号（如
+                <code>https://api.siliconflow.cn/v1</code>），Key 必须是该服务自己的，不能跨服务混用。
+              </p>
+            </div>
+
+            <div id="cfg-deepseek" class="provider-fields hidden">
+              <label class="field">
+                <span>Base URL</span>
+                <input id="cfg-deepseek-base" class="input" type="text" placeholder="https://api.deepseek.com/v1" />
+              </label>
+              <label class="field">
+                <span>API Key</span>
+                <input id="cfg-deepseek-key" class="input" type="password" placeholder="sk-...（platform.deepseek.com 生成）" />
+              </label>
+              <label class="field">
+                <span>模型</span>
+                <select id="cfg-deepseek-model" class="input select">
+                  <option value="deepseek-chat">deepseek-chat（V3.x，快，长文摘要首选）</option>
+                  <option value="deepseek-reasoner">deepseek-reasoner（R1 推理，慢但更细）</option>
+                </select>
+              </label>
+              <div class="field-row">
+                <label class="field">
+                  <span>温度</span>
+                  <input id="cfg-deepseek-temp" class="input" type="number" step="0.1" min="0" max="2" />
+                </label>
+                <label class="field">
+                  <span>单块字符预算</span>
+                  <input id="cfg-deepseek-budget" class="input" type="number" step="500" min="2000" />
+                </label>
+              </div>
+              <p class="hint-text">
+                官方接口与 OpenAI 同构，上下文 64K，单块预算可放到 16000。
+                这里的 Key 只能用于 api.deepseek.com，填 OpenAI 的 Key 会 401。
+                第三方中转站的 Key 请改用上面的「OpenAI 兼容接口」。
+              </p>
             </div>
 
             <div id="cfg-ollama" class="provider-fields hidden">
@@ -352,6 +366,28 @@
           </div>
 
           <div class="setting-group">
+            <h3>批量与历史</h3>
+            <div class="field-row">
+              <label class="field">
+                <span>视频并发数（同时处理几个视频）</span>
+                <input id="cfg-video-concurrency" class="input" type="number" min="1" max="6" step="1" />
+              </label>
+              <label class="field">
+                <span>单视频内分块并发数</span>
+                <input id="cfg-concurrency" class="input" type="number" min="1" max="8" step="1" />
+              </label>
+            </div>
+            <label class="checkbox-field">
+              <input id="cfg-save-history" type="checkbox" />
+              <span>生成完成后自动保存到历史记录</span>
+            </label>
+            <label class="field">
+              <span>历史记录最多保留条数（超出后淘汰最旧的）</span>
+              <input id="cfg-history-limit" class="input" type="number" min="20" max="5000" step="10" />
+            </label>
+          </div>
+
+          <div class="setting-group">
             <h3>应用</h3>
             <div class="setting-row">
               <button id="create-shortcut" class="btn btn-secondary btn-sm" type="button">
@@ -370,10 +406,6 @@
               <span>摘要语言</span>
               <input id="cfg-language" class="input" type="text" placeholder="zh" />
             </label>
-            <label class="field">
-              <span>并发请求数</span>
-              <input id="cfg-concurrency" class="input" type="number" min="1" max="8" step="1" />
-            </label>
             <label class="checkbox-field">
               <input id="cfg-use-danmaku" type="checkbox" />
               <span>抓取弹幕并附在摘要里</span>
@@ -388,6 +420,58 @@
         <div class="modal-foot">
           <p id="settings-status" class="settings-status"></p>
           <button id="save-settings" class="btn btn-primary" type="button">保存设置</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 合集选集弹窗 -->
+    <div id="collection-modal" class="modal hidden">
+      <div class="modal-backdrop" data-close-collection></div>
+      <div class="modal-body modal-wide">
+        <div class="modal-head">
+          <div class="collection-head-text">
+            <h2 id="collection-title">合集</h2>
+            <p id="collection-sub" class="hint-text"></p>
+          </div>
+          <button id="close-collection" class="btn btn-ghost btn-sm" type="button">关闭</button>
+        </div>
+
+        <div class="modal-content">
+          <div class="collection-toolbar">
+            <div class="head-actions">
+              <button id="collect-all" class="btn btn-ghost btn-sm" type="button">全选</button>
+              <button id="collect-none" class="btn btn-ghost btn-sm" type="button">全不选</button>
+              <button id="collect-invert" class="btn btn-ghost btn-sm" type="button">反选</button>
+            </div>
+            <span id="collect-count" class="hint-text">已选 0 集</span>
+          </div>
+
+          <div class="mode-switch">
+            <label class="mode-option">
+              <input type="radio" name="collection-mode" value="separate" checked />
+              <div class="mode-body">
+                <strong>每个视频单独生成</strong>
+                <span>勾选几集就产出几份独立摘要，各自带自己的时间戳，可分别查看与导出。</span>
+              </div>
+            </label>
+            <label class="mode-option">
+              <input type="radio" name="collection-mode" value="merged" />
+              <div class="mode-body">
+                <strong>合并成一个合集摘要</strong>
+                <span>把勾选视频的字幕拼成一条时间轴，只产出 1 份跨集总结（更省调用，更看整体脉络）。</span>
+              </div>
+            </label>
+          </div>
+
+          <div id="collection-list" class="collection-list"></div>
+        </div>
+
+        <div class="modal-foot">
+          <p id="collection-hint" class="settings-status"></p>
+          <div class="head-actions">
+            <button id="collection-cancel" class="btn btn-ghost" type="button">取消</button>
+            <button id="collection-confirm" class="btn btn-primary" type="button">加入队列</button>
+          </div>
         </div>
       </div>
     </div>

@@ -5,7 +5,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import type { AppConfig } from './types.js';
+import type { AppConfig, LlmProviderKind } from './types.js';
 
 export const DEFAULT_CONFIG: AppConfig = {
   llmProvider: 'openai',
@@ -16,6 +16,15 @@ export const DEFAULT_CONFIG: AppConfig = {
     temperature: 0.3,
     maxTokens: 4096,
     contextChars: 12000,
+  },
+  deepseek: {
+    baseUrl: 'https://api.deepseek.com/v1',
+    apiKey: '',
+    model: 'deepseek-chat',
+    temperature: 0.3,
+    maxTokens: 4096,
+    // deepseek-chat 支持 64K 上下文，单块预算可以比 4o-mini 更宽
+    contextChars: 16000,
   },
   ollama: {
     baseUrl: 'http://127.0.0.1:11434',
@@ -47,8 +56,11 @@ export const DEFAULT_CONFIG: AppConfig = {
   outputDir: '',
   exportTranscript: false,
   concurrency: 3,
+  videoConcurrency: 2,
   danmakuLimit: 300,
   useDanmaku: true,
+  saveHistory: true,
+  historyLimit: 500,
 };
 
 /** 深合并用户配置与默认值，容忍缺失字段。 */
@@ -87,6 +99,10 @@ export function validateConfig(config: AppConfig): string[] {
     if (!config.openai.baseUrl) issues.push('OpenAI 兼容接口地址不能为空');
     if (!config.openai.model) issues.push('OpenAI 兼容接口的模型名不能为空');
     if (!config.openai.apiKey) issues.push('OpenAI 兼容接口的 API Key 为空（部分本地服务可留空）');
+  } else if (config.llmProvider === 'deepseek') {
+    if (!config.deepseek.baseUrl) issues.push('DeepSeek 接口地址不能为空');
+    if (!config.deepseek.model) issues.push('DeepSeek 模型名不能为空');
+    if (!config.deepseek.apiKey) issues.push('DeepSeek 的 API Key 为空');
   } else if (config.llmProvider === 'ollama') {
     if (!config.ollama.baseUrl) issues.push('Ollama 地址不能为空');
     if (!config.ollama.model) issues.push('Ollama 模型名不能为空');
@@ -102,6 +118,9 @@ export function validateConfig(config: AppConfig): string[] {
 
   if (config.concurrency < 1 || config.concurrency > 8) {
     issues.push('并发数需在 1-8 之间');
+  }
+  if (!config.videoConcurrency || config.videoConcurrency < 1 || config.videoConcurrency > 6) {
+    issues.push('视频并发数需在 1-6 之间');
   }
   if (!config.summaryLanguage.trim()) {
     issues.push('摘要语言不能为空');
@@ -154,4 +173,27 @@ export class ConfigStore {
 /** 根据用户主目录生成默认配置路径。 */
 export function defaultConfigPath(userDataDir: string): string {
   return join(userDataDir, 'config.json');
+}
+
+/**
+ * 取某个供应商的「模型名 + 单块字符预算」。
+ *
+ * 每个供应商的配置互相独立，业务层不该硬编码 openai/ollama 两分支，
+ * 否则新增供应商时会静默用错模型名和分块预算。
+ */
+export function resolveModelProfile(
+  config: AppConfig,
+  kind: LlmProviderKind,
+): { model: string; contextChars: number } {
+  switch (kind) {
+    case 'ollama':
+      return { model: config.ollama.model, contextChars: config.ollama.contextChars || 8000 };
+    case 'deepseek':
+      return { model: config.deepseek.model, contextChars: config.deepseek.contextChars || 16000 };
+    case 'bilibili':
+      return { model: 'B站官方AI总结', contextChars: 12000 };
+    case 'openai':
+    default:
+      return { model: config.openai.model, contextChars: config.openai.contextChars || 12000 };
+  }
 }

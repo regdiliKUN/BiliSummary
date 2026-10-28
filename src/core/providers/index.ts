@@ -2,10 +2,12 @@
 import { BilibiliClient } from '../bilibili/client.js';
 import type { AppConfig, LlmProvider, LlmProviderKind } from '../types.js';
 import { BilibiliBuiltinProvider } from './bilibiliBuiltin.js';
+import { DeepSeekProvider } from './deepseek.js';
 import { OllamaProvider } from './ollama.js';
 import { OpenAiProvider } from './openai.js';
 
 export { BilibiliBuiltinProvider } from './bilibiliBuiltin.js';
+export { DeepSeekProvider, translateDeepSeekError } from './deepseek.js';
 export { OllamaProvider } from './ollama.js';
 export { OpenAiProvider } from './openai.js';
 export type { DirectSummaryProvider } from './bilibiliBuiltin.js';
@@ -17,6 +19,8 @@ export function createProvider(
   client: BilibiliClient,
 ): LlmProvider {
   switch (kind) {
+    case 'deepseek':
+      return new DeepSeekProvider(config.deepseek);
     case 'ollama':
       return new OllamaProvider(config.ollama);
     case 'bilibili':

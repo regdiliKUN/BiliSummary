@@ -15,6 +15,7 @@ import type {
   JobResult,
   LlmProvider,
   Transcript,
+  TranscriptSource,
   VideoInfo,
 } from '../types.js';
 import { summarize } from './summarize.js';
@@ -113,10 +114,10 @@ export async function runJob(opts: RunJobOptions): Promise<JobResult> {
     const transcript: Transcript = usesBuiltinSummary
       ? { source: 'bilibili-ai', segments: [] }
       : (opts.transcript ??
-        (await acquireTranscript({
+        (await fetchTranscript({
           client,
           config,
-          request,
+          source: request.source,
           bvid,
           cid,
           aid,
@@ -180,20 +181,27 @@ export async function runJob(opts: RunJobOptions): Promise<JobResult> {
 /* 字幕获取：官方字幕 -> ASR -> B站官方总结                              */
 /* ------------------------------------------------------------------ */
 
-async function acquireTranscript(params: {
+export interface FetchTranscriptParams {
   client: BilibiliClient;
   config: AppConfig;
-  request: JobRequest;
+  /** 强制指定字幕来源，留空按「字幕 -> ASR」自动回退 */
+  source?: TranscriptSource;
   bvid: string;
   cid: number;
   aid: number;
   video: VideoInfo;
   report: (stage: JobProgress['stage'], message: string, percent: number, detail?: string) => void;
   signal?: AbortSignal;
-}): Promise<Transcript> {
-  const { client, config, request, bvid, cid, aid, video, report, signal } = params;
+}
 
-  const forceSource = request.source;
+/**
+ * 取一个视频的字幕（官方字幕优先，回退到 ASR / B 站官方总结）。
+ * 抽成公开函数，合集合并生成直接复用它。
+ */
+export async function fetchTranscript(params: FetchTranscriptParams): Promise<Transcript> {
+  const { client, config, bvid, cid, aid, video, report, signal } = params;
+
+  const forceSource = params.source;
 
   // 用户强制使用 ASR
   if (forceSource === 'asr') {
@@ -257,15 +265,7 @@ async function acquireTranscript(params: {
 }
 
 /** 下载音频并转写。 */
-async function transcribeAudio(params: {
-  client: BilibiliClient;
-  config: AppConfig;
-  bvid: string;
-  cid: number;
-  aid: number;
-  report: (stage: JobProgress['stage'], message: string, percent: number, detail?: string) => void;
-  signal?: AbortSignal;
-}): Promise<Transcript> {
+async function transcribeAudio(params: FetchTranscriptParams): Promise<Transcript> {
   const { client, config, bvid, cid, aid, report, signal } = params;
 
   const asr = createAsrProvider(config.asrProvider, config);

@@ -96,7 +96,10 @@ export class WhisperCppProvider implements AsrProvider {
 
       proc.on('close', (code) => {
         if (code === 0) finish();
-        else finish(new Error(`whisper 退出码 ${code}：${stderr.slice(-500) || stdout.slice(-500)}`));
+        else {
+          const detail = (stderr.slice(-400) || stdout.slice(-400)).trim();
+          finish(new Error(`whisper 退出码 ${code}${describeExitCode(code, detail)}`));
+        }
       });
     });
 
@@ -120,18 +123,125 @@ export class WhisperCppProvider implements AsrProvider {
   async healthCheck(): Promise<{ ok: boolean; message: string }> {
     if (!this.cfg.binaryPath) return { ok: false, message: '未配置 whisper 可执行文件路径' };
     if (!this.cfg.modelPath) return { ok: false, message: '未配置 whisper 模型文件路径' };
-    try {
-      await new Promise<void>((resolve, reject) => {
-        const proc = spawn(this.cfg.binaryPath, ['--help'], { windowsHide: true });
-        proc.on('error', (err) => reject(err));
-        proc.on('close', () => resolve());
-      });
-      return { ok: true, message: 'whisper.cpp 可执行' };
-    } catch (err) {
-      return { ok: false, message: `无法执行：${(err as Error).message}` };
-    }
+    const probe = await verifyBinary(this.cfg.binaryPath);
+    return probe.ok ? { ok: true, message: probe.message } : { ok: false, message: probe.message };
   }
 }
+
+/**
+ * 判断可执行文件能否正常启动。
+ *
+ * 只判断 spawn 是否抛错是不够的：DLL 不匹配时进程会以 0xC0000139 之类的
+ * 状态码立刻退出，stdout/stderr 全是空的，spawn 本身却「成功」了。
+ */
+export async function verifyBinary(binaryPath: string): Promise<{ ok: boolean; message: string }> {
+  return new Promise((resolve) => {
+    let out = '';
+    let settled = false;
+    const done = (result: { ok: boolean; message: string }) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+
+    let proc: ReturnType<typeof spawn>;
+    try {
+      proc = spawn(binaryPath, ['--help'], { windowsHide: true });
+    } catch (err) {
+      return done({ ok: false, message: `无法执行：${(err as Error).message}` });
+    }
+
+    const timer = setTimeout(() => {
+      try {
+        proc.kill();
+      } catch {
+        /* 忽略 */
+      }
+      done({ ok: false, message: '启动自检超时（15s 无响应）' });
+    }, 15000);
+
+    proc.on('error', (err) => {
+      clearTimeout(timer);
+      done({ ok: false, message: `无法执行：${err.message}` });
+    });
+    proc.stdout?.on('data', (d) => {
+      out += d.toString();
+    });
+    proc.stderr?.on('data', (d) => {
+      out += d.toString();
+    });
+    proc.on('close', (code) => {
+      clearTimeout(timer);
+      // 部分构建的 --help 以非 0 退出，但会打印 usage，也算能跑
+      if (code === 0 || /usage:/i.test(out)) {
+        return done({ ok: true, message: 'whisper.cpp 可执行' });
+      }
+      done({ ok: false, message: `whisper 无法启动（退出码 ${code}）${describeExitCode(code, out)}` });
+    });
+  });
+}
+
+/**
+ * 把 Windows 的异常退出码翻译成人能看懂的原因。
+ *
+ * 这些码都不是 whisper 自己返回的，而是加载器/运行时在进程启动阶段就失败了，
+ * 所以 stderr 一定是空的——用户看到的「退出码 NNN：」后面什么都没有。
+ */
+export function describeExitCode(code: number | null, detail = ''): string {
+  const tail = detail.trim() ? `：${detail.trim().slice(-300)}` : '';
+  const name = EXIT_CODES.get(code ?? -1);
+  if (!name) return tail ? `${tail}` : '';
+  return `（${name.hex} ${name.title}）${name.hint}${tail}`;
+}
+
+const EXIT_CODES = new Map<
+  number,
+  { hex: string; title: string; hint: string }
+>([
+  [
+    3221225785,
+    {
+      hex: '0xC0000139',
+      title: '找不到 DLL 入口点',
+      hint:
+        'whisper 的依赖 DLL 版本对不上或文件损坏（最常见是 ggml-base.dll / ggml-cpu-*.dll 解压不完整）。' +
+        '解决：删除 %APPDATA%\\BiliSummary\\asr\\whisper 后重新一键安装，或手动解压 whisper-bin-x64.zip 覆盖。',
+    },
+  ],
+  [
+    3221225477,
+    {
+      hex: '0xC0000005',
+      title: '访问冲突',
+      hint:
+        '进程启动即崩溃，通常是 DLL 混用/被杀软拦截/文件损坏。先重装 whisper，仍失败再排查杀毒软件与 VC++ 运行库。',
+    },
+  ],
+  [
+    3221225595,
+    {
+      hex: '0xC000007B',
+      title: '映像格式无效',
+      hint: '32 位与 64 位组件混用，或下载的文件本身损坏，请重新下载 x64 版本。',
+    },
+  ],
+  [
+    3221225781,
+    {
+      hex: '0xC0000135',
+      title: '缺少 DLL',
+      hint: '缺少 VC++ 运行库或 whisper 自带的 DLL，请安装 Microsoft Visual C++ 2015-2022 x64 运行库。',
+    },
+  ],
+  [
+    3221226505,
+    {
+      hex: '0xC0000409',
+      title: '栈溢出/安全校验失败',
+      hint: '常见于杀毒软件注入或模型文件损坏，请重装 whisper 并重新下载模型。',
+    },
+  ],
+]);
 
 /** 兼容 whisper.cpp 不同版本的 JSON 输出结构。 */
 export function parseWhisperJson(payload: any): TranscriptSegment[] {

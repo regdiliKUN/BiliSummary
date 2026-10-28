@@ -6,9 +6,11 @@
  */
 import { createHash } from 'node:crypto';
 import type {
+  CollectionEpisode,
   DanmakuItem,
   Transcript,
   TranscriptSegment,
+  VideoCollection,
   VideoInfo,
   VideoPart,
   VideoStat,
@@ -437,6 +439,13 @@ export class BilibiliClient {
       like: data.stat?.like ?? 0,
     };
 
+    // 合集信息（B 站「合集」= ugc_season）。绝大多数情况一次就能拿全，
+    // 超大合集只返回前 N 集，需要再用 archives 接口补齐。
+    let collection = this.parseSeason(data.ugc_season);
+    if (collection && !collection.complete) {
+      collection = await this.fillSeason(collection);
+    }
+
     return {
       bvid: data.bvid,
       aid: data.aid,
@@ -456,7 +465,91 @@ export class BilibiliClient {
       parts,
       url: `${WEB_BASE}/video/${data.bvid}`,
       rawUrl: `${WEB_BASE}/video/${data.bvid}/`,
+      collection,
     };
+  }
+
+  /** 把 view 接口返回的 ugc_season 转成内部的合集结构。 */
+  private parseSeason(raw: any): VideoCollection | null {
+    if (!raw || typeof raw !== 'object') return null;
+    const sections = Array.isArray(raw.sections) ? raw.sections : [];
+    const episodes: CollectionEpisode[] = [];
+
+    for (const section of sections) {
+      const list = Array.isArray(section?.episodes) ? section.episodes : [];
+      for (const ep of list) {
+        const bvid = ep?.bvid;
+        if (!bvid) continue;
+        const arc = ep?.arc ?? {};
+        episodes.push({
+          bvid: String(bvid),
+          aid: Number(ep?.aid ?? arc.aid ?? 0),
+          cid: Number(ep?.cid ?? ep?.page?.cid ?? 0) || undefined,
+          title: String(arc.title || ep?.title || bvid),
+          duration: Number(arc.duration ?? ep?.page?.duration ?? 0) || 0,
+          cover: toHttps(String(arc.pic || '')),
+          pubdate: Number(arc.pubdate ?? 0) || 0,
+          section: section?.title ? String(section.title) : undefined,
+          index: episodes.length + 1,
+        });
+      }
+    }
+
+    if (!episodes.length) return null;
+    const total = Number(raw.ep_count) || episodes.length;
+    return {
+      id: Number(raw.id) || 0,
+      title: String(raw.title || '未命名合集'),
+      cover: toHttps(String(raw.cover || '')),
+      mid: Number(raw.mid) || 0,
+      intro: String(raw.intro || ''),
+      total,
+      episodes,
+      complete: episodes.length >= total,
+    };
+  }
+
+  /** 合集集数超过 view 接口返回上限时，用 archives 接口分页补齐。 */
+  private async fillSeason(collection: VideoCollection): Promise<VideoCollection> {
+    if (!collection.mid || !collection.id) return collection;
+
+    const seen = new Set(collection.episodes.map((ep) => ep.bvid));
+    const merged = collection.episodes.slice();
+    const pageSize = 30;
+
+    for (let page = 1; page <= 30; page += 1) {
+      if (merged.length >= collection.total) break;
+      let archives: any[] = [];
+      try {
+        const data = await this.getJson<any>(
+          `${API_BASE}/x/polymer/web-space/seasons_archives_list` +
+            `?mid=${collection.mid}&season_id=${collection.id}&page_num=${page}&page_size=${pageSize}`,
+        );
+        archives = Array.isArray(data?.archives) ? data.archives : [];
+      } catch (err) {
+        console.warn(`合集分页补齐失败（第 ${page} 页）：${(err as Error).message}`);
+        break;
+      }
+      if (!archives.length) break;
+
+      for (const item of archives) {
+        const bvid = item?.bvid;
+        if (!bvid || seen.has(bvid)) continue;
+        seen.add(bvid);
+        merged.push({
+          bvid: String(bvid),
+          aid: Number(item?.aid ?? 0),
+          title: String(item?.title || bvid),
+          duration: Number(item?.duration ?? 0) || 0,
+          cover: toHttps(String(item?.pic || '')),
+          pubdate: Number(item?.pubdate ?? 0) || 0,
+          index: merged.length + 1,
+        });
+      }
+      if (archives.length < pageSize) break;
+    }
+
+    return { ...collection, episodes: merged, complete: merged.length >= collection.total };
   }
 
   /**

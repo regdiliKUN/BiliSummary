@@ -17,8 +17,15 @@ import type {
   VideoSummary,
 } from '../types.js';
 import { extractJson, normalizeText, toStringList, truncate } from '../utils/text.js';
+import { resolveModelProfile } from '../config.js';
 import { chunkTranscript, formatShort, type TranscriptChunk } from './chunk.js';
-import { buildChunkPrompt, buildMergePrompt, CHUNK_SYSTEM, MERGE_SYSTEM } from './prompts.js';
+import {
+  buildChunkPrompt,
+  buildMergePrompt,
+  CHUNK_SYSTEM,
+  MERGE_SYSTEM,
+  type CollectionPromptContext,
+} from './prompts.js';
 import { findHotMoments, renderHotMoments } from './hotmoments.js';
 
 export interface SummarizeOptions {
@@ -29,6 +36,8 @@ export interface SummarizeOptions {
   danmaku?: DanmakuItem[];
   signal?: AbortSignal;
   onProgress?: (info: { percent: number; message: string; detail?: string }) => void;
+  /** 合集合并模式：告诉模型这是多集拼起来的转录 */
+  collection?: CollectionPromptContext;
 }
 
 export class SummaryError extends Error {
@@ -67,8 +76,8 @@ export async function summarize(opts: SummarizeOptions): Promise<VideoSummary> {
   }
 
   // --- 分块 ---
-  const budget = provider.kind === 'ollama' ? config.ollama.contextChars : config.openai.contextChars;
-  const chunks = chunkTranscript(transcript.segments, budget || 12000);
+  const profile = resolveModelProfile(config, provider.kind);
+  const chunks = chunkTranscript(transcript.segments, profile.contextChars || 12000);
   if (!chunks.length) {
     throw new SummaryError('字幕内容为空');
   }
@@ -100,6 +109,7 @@ export async function summarize(opts: SummarizeOptions): Promise<VideoSummary> {
         chunkTotal: chunks.length,
         hotMoments: renderHotMoments(hotMoments, { start: chunk.start, end: chunk.end }) || undefined,
         language: config.summaryLanguage,
+        collection: opts.collection,
         signal,
       });
     } catch (err) {
@@ -139,6 +149,7 @@ export async function summarize(opts: SummarizeOptions): Promise<VideoSummary> {
     video,
     chunkResults,
     language: config.summaryLanguage,
+    collection: opts.collection,
     signal,
   });
 
@@ -149,7 +160,7 @@ export async function summarize(opts: SummarizeOptions): Promise<VideoSummary> {
     outline: merged.outline,
     insights: merged.insights,
     warnings,
-    model: provider.kind === 'ollama' ? config.ollama.model : config.openai.model,
+    model: profile.model,
     provider: provider.kind,
     transcriptSource: transcript.source,
     createdAt: new Date().toISOString(),
@@ -167,9 +178,10 @@ async function summarizeChunk(params: {
   chunkTotal: number;
   hotMoments?: string;
   language: string;
+  collection?: CollectionPromptContext;
   signal?: AbortSignal;
 }): Promise<SummarySegment[]> {
-  const { provider, video, chunk, chunkTotal, hotMoments, language, signal } = params;
+  const { provider, video, chunk, chunkTotal, hotMoments, language, collection, signal } = params;
 
   const previousTail = chunk.index > 0 ? tailOf(chunk) : undefined;
   const prompt = buildChunkPrompt({
@@ -183,6 +195,7 @@ async function summarizeChunk(params: {
     previousTail,
     hotMoments,
     language,
+    collection,
   });
 
   const messages: ChatMessage[] = [
@@ -210,6 +223,7 @@ async function mergeSummaries(params: {
   video: VideoInfo;
   chunkResults: { index: number; start: number; end: number; data: SummarySegment[] }[];
   language: string;
+  collection?: CollectionPromptContext;
   signal?: AbortSignal;
 }): Promise<{
   tldr: string;
@@ -218,7 +232,7 @@ async function mergeSummaries(params: {
   outline: { start: number; title: string }[];
   insights: string[];
 }> {
-  const { provider, video, chunkResults, language, signal } = params;
+  const { provider, video, chunkResults, language, collection, signal } = params;
 
   const prompt = buildMergePrompt({
     title: video.title,
@@ -226,6 +240,7 @@ async function mergeSummaries(params: {
     duration: video.duration,
     chunkSummaries: chunkResults,
     language,
+    collection,
   });
 
   const messages: ChatMessage[] = [

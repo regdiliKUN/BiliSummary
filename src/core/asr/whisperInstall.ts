@@ -6,12 +6,13 @@
  */
 import { spawn } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
-import { mkdir, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, rename, rm, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { verifyBinary } from './whisperCpp.js';
 
 const GITHUB_RELEASES = 'https://api.github.com/repos/ggml-org/whisper.cpp/releases?per_page=12';
 const HF_BASE = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main';
@@ -221,6 +222,20 @@ export async function installWhisper(params: {
       };
     }
 
+    // --- 3.5 启动自检 ---
+    // 解压「成功」不代表能跑：DLL 解压不完整时进程会带着 0xC0000139 立刻退出，
+    // 直到用户转写时才暴露出“whisper 退出码 xxx：”这种空信息。
+    onProgress?.({ percent: 29, message: '正在校验 whisper 可执行性…', stage: 'extract' });
+    const probe = await verifyBinary(binaryPath);
+    if (!probe.ok) {
+      return {
+        ok: false,
+        message:
+          `whisper 已解压但无法启动：${probe.message}。` +
+          `请删除 ${binDir} 后重新安装；若仍然失败，检查杀毒软件是否拦截了 DLL。`,
+      };
+    }
+
     // --- 4. 下载模型 ---
     const modelInfo = WHISPER_MODELS.find((m) => m.id === model) ?? WHISPER_MODELS[2]!;
     await mkdir(modelDir, { recursive: true });
@@ -248,8 +263,9 @@ export async function installWhisper(params: {
         },
         signal,
       );
-      await writeFile(modelPath, await import('node:fs/promises').then((fs) => fs.readFile(tmpModel)));
-      await rm(tmpModel, { force: true });
+      // 模型 1.6GB：读进内存再写回会直接把主进程堆打满，同盘改名是零拷贝的
+      await rm(modelPath, { force: true });
+      await rename(tmpModel, modelPath);
     } else {
       onProgress?.({ percent: 98, message: '模型已存在，跳过下载', stage: 'download-model' });
     }

@@ -13,7 +13,10 @@ import { createProvider } from '../core/providers/index.js';
 import { createAsrProvider } from '../core/asr/index.js';
 import { installWhisper, type WhisperModelSize } from '../core/asr/whisperInstall.js';
 import { OllamaProvider } from '../core/providers/ollama.js';
+import { HistoryStore } from '../core/history.js';
 import { runJob } from '../core/pipeline/job.js';
+import { runCollectionJob } from '../core/pipeline/collection.js';
+import { BatchRunner } from '../core/pipeline/batch.js';
 import {
   APP_USER_MODEL_ID,
   createDesktopShortcut,
@@ -22,8 +25,11 @@ import {
 } from './shortcut.js';
 import type {
   AppConfig,
+  BatchStartPayload,
+  CollectionJobRequest,
   JobProgress,
   JobRequest,
+  JobResult,
   LlmProviderKind,
   VideoInfo,
 } from '../core/types.js';
@@ -34,20 +40,46 @@ const BILI_PARTITION = 'persist:bilibili-login';
 let mainWindow: BrowserWindow | null = null;
 let loginWindow: BrowserWindow | null = null;
 let configStore: ConfigStore | null = null;
+let historyStore: HistoryStore | null = null;
 
-/** 运行中的任务，用于取消。 */
-const runningJobs = new Map<string, AbortController>();
+/* ------------------------------------------------------------------ */
+/* 批量任务                                                            */
+/* ------------------------------------------------------------------ */
 
 /** 取消所有正在运行的任务。 */
 function abortAllJobs(): void {
-  for (const controller of runningJobs.values()) {
-    try {
-      controller.abort();
-    } catch {
-      /* 忽略 */
+  jobRunner.cancelAll();
+}
+
+const jobRunner = new BatchRunner<JobResult>({
+  onDone: (taskId, result) => {
+    // 先落历史，再通知界面：界面收到 done 就能直接刷新历史列表
+    if (getConfig().saveHistory !== false) {
+      try {
+        getHistoryStore().add(result, { limit: getConfig().historyLimit || 500 });
+      } catch (err) {
+        console.error('写入历史记录失败：', (err as Error).message);
+      }
     }
+    sendToRenderer('job:done', result);
+  },
+  onError: (taskId, error) => {
+    sendToRenderer('job:failed', {
+      jobId: taskId,
+      message: error.message,
+      hint: (error as { hint?: string }).hint,
+    });
+  },
+  onCancelled: (taskId) => {
+    sendToRenderer('job:cancelled', { jobId: taskId });
+  },
+});
+
+function getHistoryStore(): HistoryStore {
+  if (!historyStore) {
+    historyStore = new HistoryStore(join(app.getPath('userData'), 'history'));
   }
-  runningJobs.clear();
+  return historyStore;
 }
 
 /** 正在进行的 ASR 安装任务。 */
@@ -268,54 +300,171 @@ function registerIpc(): void {
     return client.getVideoInfo(bvid);
   });
 
-  // --- 任务 ---
-  ipcMain.handle('job:start', async (_e, request: JobRequest) => {
-    const jobId = `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const controller = new AbortController();
-    runningJobs.set(jobId, controller);
+  // --- 任务（单个 / 批量共用一个调度器） ---
+  ipcMain.handle('batch:start', (_e, payload: BatchStartPayload) => {
+    const tasks = Array.isArray(payload?.tasks) ? payload.tasks : [];
+    if (!tasks.length) return { ok: false, count: 0, message: '没有可执行的任务' };
 
     const config = getConfig();
+    const client = getClient();
+    const concurrency = payload.concurrency ?? config.videoConcurrency ?? 2;
 
-    // 后台执行，立刻返回 jobId
-    void (async () => {
-      try {
-        const result = await runJob({
-          request,
-          config,
-          jobId,
-          client: getClient(),
-          signal: controller.signal,
-          onProgress: (progress: JobProgress) => {
-            sendToRenderer('job:progress', progress);
-          },
-        });
-        sendToRenderer('job:done', result);
-      } catch (err) {
-        if (controller.signal.aborted) {
-          sendToRenderer('job:cancelled', { jobId });
-        } else {
-          sendToRenderer('job:failed', {
-            jobId,
-            message: (err as Error).message,
-            hint: (err as { hint?: string }).hint,
-          });
-        }
-      } finally {
-        runningJobs.delete(jobId);
-      }
-    })();
+    jobRunner.start(
+      tasks.map(({ taskId, request }) => ({
+        id: taskId,
+        run: (signal) =>
+          runJob({
+            request,
+            config,
+            jobId: taskId,
+            client,
+            signal,
+            onProgress: (progress: JobProgress) => {
+              sendToRenderer('job:progress', progress);
+            },
+          }),
+      })),
+      concurrency,
+    );
+
+    return { ok: true, count: tasks.length };
+  });
+
+  ipcMain.handle('job:start', (_e, request: JobRequest) => {
+    const jobId = `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const config = getConfig();
+    const client = getClient();
+
+    jobRunner.start(
+      [
+        {
+          id: jobId,
+          run: (signal) =>
+            runJob({
+              request,
+              config,
+              jobId,
+              client,
+              signal,
+              onProgress: (progress: JobProgress) => {
+                sendToRenderer('job:progress', progress);
+              },
+            }),
+        },
+      ],
+      config.videoConcurrency ?? 2,
+    );
 
     return { jobId };
   });
 
-  ipcMain.handle('job:cancel', (_e, jobId: string) => {
-    const controller = runningJobs.get(jobId);
-    if (controller) {
-      controller.abort();
-      runningJobs.delete(jobId);
+  // 合集合并生成：多集字幕拼成一条时间轴，一次产出整体摘要
+  ipcMain.handle(
+    'collection:start',
+    (_e, payload: { taskId: string; request: CollectionJobRequest }) => {
+      const config = getConfig();
+      const client = getClient();
+      const { taskId, request } = payload ?? ({} as typeof payload);
+      if (!taskId || !request) return { ok: false, message: '参数不完整' };
+
+      jobRunner.start(
+        [
+          {
+            id: taskId,
+            run: (signal) =>
+              runCollectionJob({
+                request,
+                config,
+                jobId: taskId,
+                client,
+                signal,
+                onProgress: (progress: JobProgress) => {
+                  sendToRenderer('job:progress', progress);
+                },
+              }),
+          },
+        ],
+        config.videoConcurrency ?? 2,
+      );
+
       return { ok: true };
-    }
-    return { ok: false };
+    },
+  );
+
+  ipcMain.handle('job:cancel', (_e, jobId: string) => {
+    return { ok: jobRunner.cancel(jobId) };
+  });
+
+  ipcMain.handle('batch:cancelAll', () => {
+    jobRunner.cancelAll();
+    return { ok: true };
+  });
+
+  ipcMain.handle('batch:setConcurrency', (_e, value: number) => {
+    jobRunner.setConcurrency(value);
+    return { ok: true };
+  });
+
+  // --- 历史记录 ---
+  ipcMain.handle('history:list', () => getHistoryStore().list());
+
+  ipcMain.handle('history:get', (_e, id: string) => getHistoryStore().get(id));
+
+  ipcMain.handle('history:delete', (_e, id: string) => ({ ok: getHistoryStore().remove(id) }));
+
+  ipcMain.handle('history:clear', () => ({ count: getHistoryStore().clear() }));
+
+  ipcMain.handle('history:favorite', (_e, id: string, favorite: boolean) => {
+    return getHistoryStore().setFavorite(id, favorite);
+  });
+
+  ipcMain.handle('history:find', (_e, bvid: string, part: number) => {
+    return getHistoryStore().find(bvid, part);
+  });
+
+  ipcMain.handle('history:exportMerged', async (_e, ids: string[]) => {
+    const list = Array.isArray(ids) && ids.length ? ids : getHistoryStore().list().map((i) => i.id);
+    if (!list.length) return { ok: false, message: '没有可导出的记录' };
+
+    const { content, missing } = getHistoryStore().buildMergedMarkdown(list);
+    const stamp = new Date().toISOString().slice(0, 10);
+    const config = getConfig();
+    const defaultPath = config.outputDir
+      ? join(config.outputDir, `BiliSummary-批量摘要-${stamp}.md`)
+      : `BiliSummary-批量摘要-${stamp}.md`;
+
+    const picked = await dialog.showSaveDialog({
+      title: '合并导出为 Markdown',
+      defaultPath,
+      filters: [
+        { name: 'Markdown', extensions: ['md'] },
+        { name: '所有文件', extensions: ['*'] },
+      ],
+    });
+    if (picked.canceled || !picked.filePath) return { ok: false, canceled: true };
+
+    writeFileSync(picked.filePath, content, 'utf8');
+    return { ok: true, path: picked.filePath, count: list.length - missing.length };
+  });
+
+  ipcMain.handle('history:exportFolder', async (_e, ids: string[]) => {
+    const list = Array.isArray(ids) && ids.length ? ids : getHistoryStore().list().map((i) => i.id);
+    if (!list.length) return { ok: false, message: '没有可导出的记录' };
+
+    const picked = await dialog.showOpenDialog({
+      title: '选择导出文件夹',
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    if (picked.canceled || !picked.filePaths[0]) return { ok: false, canceled: true };
+
+    const { written } = getHistoryStore().exportToFolder(list, picked.filePaths[0]);
+    return { ok: true, path: picked.filePaths[0], count: written };
+  });
+
+  ipcMain.handle('history:openFolder', async () => {
+    const dir = getHistoryStore().dir;
+    await shell.openPath(dir);
+    return { ok: true, path: dir };
   });
 
   // --- 供应商检测 ---
@@ -489,6 +638,7 @@ function registerIpc(): void {
     version: app.getVersion(),
     platform: process.platform,
     configPath: getConfigStore().filePath,
+    historyDir: getHistoryStore().dir,
     appUserModelId: APP_USER_MODEL_ID,
   }));
 }

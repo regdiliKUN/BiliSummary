@@ -1,10 +1,12 @@
 /** 把摘要渲染成 Markdown / SRT 等可导出格式。 */
 import type {
+  CollectionResultInfo,
   DanmakuItem,
   Transcript,
   VideoInfo,
   VideoSummary,
 } from '../types.js';
+import { formatCollectionTimestamp } from '../utils/collection.js';
 import { formatDate, formatDurationCn, formatTimestamp, toSrtTimestamp } from '../utils/time.js';
 
 /** 渲染完整的摘要 Markdown。 */
@@ -133,6 +135,124 @@ export function renderMarkdown(params: {
   lines.push('');
 
   return lines.join('\n');
+}
+
+/** 渲染合集合并摘要的 Markdown。 */
+export function renderCollectionMarkdown(params: {
+  collection: CollectionResultInfo;
+  summary: VideoSummary;
+  transcript?: Transcript;
+  includeTranscript?: boolean;
+}): string {
+  const { collection, summary, transcript, includeTranscript } = params;
+  const lines: string[] = [];
+
+  lines.push(`# 合集《${collection.title}》摘要`);
+  lines.push('');
+
+  lines.push('| 项目 | 内容 |');
+  lines.push('| --- | --- |');
+  lines.push(`| 合集 | ${collection.title} |`);
+  lines.push(
+    `| 本次覆盖 | ${collection.covered} 集（合集共 ${collection.total} 集） |`,
+  );
+  const totalDuration = collection.episodes.reduce((sum, ep) => sum + ep.duration, 0);
+  lines.push(`| 总时长 | ${formatDurationCn(totalDuration)} |`);
+  lines.push(`| 生成于 | ${formatDate(Math.floor(Date.now() / 1000))} |`);
+  lines.push(`| 模型 | ${summary.model} |`);
+  lines.push('');
+
+  if (summary.warnings?.length) {
+    lines.push('## ⚠️ 注意');
+    lines.push('');
+    for (const warning of summary.warnings) lines.push(`- ${warning}`);
+    lines.push('');
+  }
+
+  lines.push('## 收录视频');
+  lines.push('');
+  lines.push('| # | 标题 | 时长 | 链接 |');
+  lines.push('| --- | --- | --- | --- |');
+  for (const ep of collection.episodes) {
+    lines.push(`| ${ep.index} | ${escapeCell(ep.title)} | ${formatDurationCn(ep.duration)} | ${ep.url} |`);
+  }
+  lines.push('');
+
+  if (summary.tldr) {
+    lines.push('## 一句话总结');
+    lines.push('');
+    lines.push(summary.tldr);
+    lines.push('');
+  }
+
+  if (summary.keyPoints.length) {
+    lines.push('## 关键要点');
+    lines.push('');
+    for (const point of summary.keyPoints) lines.push(`- ${point}`);
+    lines.push('');
+  }
+
+  if (summary.outline.length) {
+    lines.push('## 章节速览');
+    lines.push('');
+    for (const item of summary.outline) {
+      lines.push(
+        `- \`${formatCollectionTimestamp(collection.episodes, item.start, item.title)}\` ${item.title}`,
+      );
+    }
+    lines.push('');
+  }
+
+  if (summary.segments.length) {
+    lines.push('## 分段摘要');
+    lines.push('');
+    for (const seg of summary.segments) {
+      lines.push(
+        `### ${formatCollectionTimestamp(collection.episodes, seg.start, seg.title)} - ${formatCollectionTimestamp(collection.episodes, seg.end, seg.title)} · ${seg.title}`,
+      );
+      if (seg.points.length) {
+        lines.push('');
+        for (const point of seg.points) lines.push(`- ${point}`);
+      }
+      if (seg.summary) {
+        lines.push('');
+        lines.push(`**概述**：${seg.summary}`);
+      }
+      lines.push('');
+    }
+  }
+
+  if (summary.insights.length) {
+    lines.push('## 关键洞察');
+    lines.push('');
+    for (const insight of summary.insights) lines.push(`- ${insight}`);
+    lines.push('');
+  }
+
+  if (includeTranscript && transcript?.segments.length) {
+    lines.push('## 字幕全文（合集时间轴）');
+    lines.push('');
+    for (const seg of transcript.segments) {
+      lines.push(
+        `\`${formatCollectionTimestamp(collection.episodes, seg.start)}\` ${seg.text}`,
+      );
+      lines.push('');
+    }
+  }
+
+  lines.push('---');
+  lines.push('');
+  lines.push(
+    `> 由 BiliSummary 合并生成 · 覆盖 ${collection.covered}/${collection.total} 集 · 模型：${summary.model}`,
+  );
+  lines.push('');
+
+  return lines.join('\n');
+}
+
+/** 表格单元格里的竖线必须转义，否则会把列切断。 */
+function escapeCell(text: string): string {
+  return (text || '').replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
 }
 
 /** 渲染字幕全文为 Markdown。 */

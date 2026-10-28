@@ -4,6 +4,11 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type {
   AppConfig,
+  BatchStartPayload,
+  BatchTaskInput,
+  CollectionJobRequest,
+  HistoryEntry,
+  HistoryRecord,
   JobProgress,
   JobRequest,
   JobResult,
@@ -31,11 +36,26 @@ export interface BiliSummaryApi {
 
   /* 任务 */
   startJob(request: JobRequest): Promise<{ jobId: string }>;
+  startBatch(tasks: BatchTaskInput[], concurrency?: number): Promise<{ ok: boolean; count: number }>;
+  startCollection(taskId: string, request: CollectionJobRequest): Promise<{ ok: boolean; message?: string }>;
   cancelJob(jobId: string): Promise<{ ok: boolean }>;
+  cancelAllJobs(): Promise<{ ok: boolean }>;
+  setConcurrency(value: number): Promise<{ ok: boolean }>;
   onJobProgress(cb: (progress: JobProgress) => void): () => void;
   onJobDone(cb: (result: JobResult) => void): () => void;
   onJobFailed(cb: (info: { jobId: string; message: string; hint?: string }) => void): () => void;
   onJobCancelled(cb: (info: { jobId: string }) => void): () => void;
+
+  /* 历史记录 */
+  listHistory(): Promise<HistoryEntry[]>;
+  getHistory(id: string): Promise<HistoryRecord | null>;
+  deleteHistory(id: string): Promise<{ ok: boolean }>;
+  clearHistory(): Promise<{ count: number }>;
+  favoriteHistory(id: string, favorite: boolean): Promise<HistoryEntry | null>;
+  findHistory(bvid: string, part: number): Promise<HistoryEntry | null>;
+  exportHistoryMerged(ids: string[]): Promise<{ ok: boolean; path?: string; count?: number; canceled?: boolean; message?: string }>;
+  exportHistoryFolder(ids: string[]): Promise<{ ok: boolean; path?: string; count?: number; canceled?: boolean; message?: string }>;
+  openHistoryFolder(): Promise<{ ok: boolean; path: string }>;
 
   /* 检测 */
   checkProvider(kind: LlmProviderKind): Promise<{ ok: boolean; message: string }>;
@@ -63,7 +83,7 @@ export interface BiliSummaryApi {
   removeShortcut(): Promise<ShortcutResult>;
 
   /* 应用信息 */
-  getAppInfo(): Promise<{ version: string; platform: string; configPath: string }>;
+  getAppInfo(): Promise<{ version: string; platform: string; configPath: string; historyDir: string }>;
 }
 
 const api: BiliSummaryApi = {
@@ -84,7 +104,13 @@ const api: BiliSummaryApi = {
   fetchVideoInfo: (url) => ipcRenderer.invoke('video:info', url),
 
   startJob: (request) => ipcRenderer.invoke('job:start', request),
+  startBatch: (tasks: BatchTaskInput[], concurrency?: number) =>
+    ipcRenderer.invoke('batch:start', { tasks, concurrency } as BatchStartPayload),
+  startCollection: (taskId: string, request: CollectionJobRequest) =>
+    ipcRenderer.invoke('collection:start', { taskId, request }),
   cancelJob: (jobId) => ipcRenderer.invoke('job:cancel', jobId),
+  cancelAllJobs: () => ipcRenderer.invoke('batch:cancelAll'),
+  setConcurrency: (value) => ipcRenderer.invoke('batch:setConcurrency', value),
   onJobProgress: (cb) => {
     const listener = (_e: unknown, p: JobProgress) => cb(p);
     ipcRenderer.on('job:progress', listener);
@@ -105,6 +131,16 @@ const api: BiliSummaryApi = {
     ipcRenderer.on('job:cancelled', listener);
     return () => ipcRenderer.removeListener('job:cancelled', listener);
   },
+
+  listHistory: () => ipcRenderer.invoke('history:list'),
+  getHistory: (id) => ipcRenderer.invoke('history:get', id),
+  deleteHistory: (id) => ipcRenderer.invoke('history:delete', id),
+  clearHistory: () => ipcRenderer.invoke('history:clear'),
+  favoriteHistory: (id, favorite) => ipcRenderer.invoke('history:favorite', id, favorite),
+  findHistory: (bvid, part) => ipcRenderer.invoke('history:find', bvid, part),
+  exportHistoryMerged: (ids) => ipcRenderer.invoke('history:exportMerged', ids),
+  exportHistoryFolder: (ids) => ipcRenderer.invoke('history:exportFolder', ids),
+  openHistoryFolder: () => ipcRenderer.invoke('history:openFolder'),
 
   checkProvider: (kind) => ipcRenderer.invoke('provider:check', kind),
   checkAsr: () => ipcRenderer.invoke('asr:check'),

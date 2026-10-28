@@ -18,6 +18,16 @@ export const MERGE_SYSTEM = `你是一名专业的视频内容编辑，负责把
 3. 保留原始分段的时间戳，不要修改时间。
 4. 用与内容相同的语言书写。`;
 
+/** 合集上下文：只在「合并生成」时传入。 */
+export interface CollectionPromptContext {
+  /** 合集名称 */
+  title: string;
+  /** 合集总集数 */
+  total: number;
+  /** 本次合并覆盖的集数 */
+  covered: number;
+}
+
 /** 逐块摘要的提示词。 */
 export function buildChunkPrompt(params: {
   title: string;
@@ -31,6 +41,8 @@ export function buildChunkPrompt(params: {
   /** 该时间范围内的弹幕热点，辅助模型定位名场面 */
   hotMoments?: string;
   language: string;
+  /** 合集合并模式下的额外上下文 */
+  collection?: CollectionPromptContext;
 }): string {
   const {
     title,
@@ -43,10 +55,21 @@ export function buildChunkPrompt(params: {
     previousTail,
     hotMoments,
     language,
+    collection,
   } = params;
 
   const parts: string[] = [];
   parts.push(`视频标题：${title}`);
+  if (collection) {
+    parts.push(
+      `这是合集《${collection.title}》的合并转录：合集共 ${collection.total} 集，本次合并其中 ${collection.covered} 集，` +
+        '各集首尾相接，时间戳是一条连续时间轴。',
+    );
+    parts.push(
+      '字幕中形如「—— 第 N 集：标题 ——」的行是集与集的分界。' +
+        '请在每个 segment 的 title 前面标明所属集，例如「第3集 · 开场铺垫」。',
+    );
+  }
   if (description) {
     parts.push(`视频简介（UP 主提供的背景信息，可用于理解术语与上下文）：`);
     parts.push(description);
@@ -105,8 +128,10 @@ export function buildMergePrompt(params: {
   chunkSummaries: { index: number; start: number; end: number; data: SummarySegment[] }[];
   language: string;
   hasFullTranscript?: boolean;
+  /** 合集合并模式下的额外上下文 */
+  collection?: CollectionPromptContext;
 }): string {
-  const { title, description, duration, chunkSummaries, language } = params;
+  const { title, description, duration, chunkSummaries, language, collection } = params;
 
   const rendered = chunkSummaries
     .map((chunk) => {
@@ -123,6 +148,11 @@ export function buildMergePrompt(params: {
 
   const parts: string[] = [];
   parts.push(`视频标题：${title}`);
+  if (collection) {
+    parts.push(
+      `这是合集《${collection.title}》的合并总结：合集共 ${collection.total} 集，本次覆盖其中 ${collection.covered} 集。`,
+    );
+  }
   if (description) {
     parts.push(`视频简介：`);
     parts.push(description);
@@ -158,7 +188,18 @@ export function buildMergePrompt(params: {
   );
   parts.push('');
   parts.push('要求：');
-  parts.push('- tldr 用一两句话概括整个视频的核心内容。');
+  if (collection) {
+    parts.push(
+      '- tldr 概括整个合集讲的主题脉络，而不是只讲最后一集。',
+    );
+    parts.push(
+      '- keyPoints 要能体现跨集的共性与演进（观点怎么变化、方法怎么递进），避免只是逐集罗列。',
+    );
+    parts.push('- segments 的 title 前标明所属集，例如「第3集 · 现场实操」。');
+    parts.push('- 时间戳沿用输入中的值，不要自行换算。');
+  } else {
+    parts.push('- tldr 用一两句话概括整个视频的核心内容。');
+  }
   parts.push('- keyPoints 给出 5-8 条覆盖全片的关键要点，避免与 segments 重复啰嗦。');
   parts.push('- outline 是章节索引，时间递增。');
   parts.push('- segments 保留分段摘要并做适度合并与润色，时间戳必须与输入一致。');
