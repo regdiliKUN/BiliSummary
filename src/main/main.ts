@@ -19,6 +19,13 @@ import { runJob } from '../core/pipeline/job.js';
 import { runCollectionJob } from '../core/pipeline/collection.js';
 import { BatchRunner } from '../core/pipeline/batch.js';
 import {
+  clampVideoConcurrency,
+  isSafeExternalUrl,
+  isSafeFileName,
+  isSafeId,
+  isSafeTaskUrl,
+} from '../core/utils/limits.js';
+import {
   APP_USER_MODEL_ID,
   createDesktopShortcut,
   getShortcutState,
@@ -261,8 +268,10 @@ function registerIpc(): void {
   ipcMain.handle('config:get', () => getConfig());
 
   ipcMain.handle('config:set', (_e, partial: Partial<AppConfig>) => {
-    const merged = getConfigStore().patch(partial);
-    return merged;
+    if (!partial || typeof partial !== 'object' || Array.isArray(partial)) {
+      throw new Error('配置格式不正确');
+    }
+    return getConfigStore().patch(partial);
   });
 
   ipcMain.handle('config:validate', () => validateConfig(getConfig()));
@@ -296,6 +305,7 @@ function registerIpc(): void {
 
   // --- 视频信息 ---
   ipcMain.handle('video:info', async (_e, url: string): Promise<VideoInfo> => {
+    if (!isSafeTaskUrl(url)) throw new Error('视频链接不合法');
     const client = getClient();
     const { bvid } = await client.resolve(url);
     return client.getVideoInfo(bvid);
@@ -303,12 +313,24 @@ function registerIpc(): void {
 
   // --- 任务（单个 / 批量共用一个调度器） ---
   ipcMain.handle('batch:start', (_e, payload: BatchStartPayload) => {
-    const tasks = Array.isArray(payload?.tasks) ? payload.tasks : [];
-    if (!tasks.length) return { ok: false, count: 0, message: '没有可执行的任务' };
+    const rawTasks = Array.isArray(payload?.tasks) ? payload.tasks : [];
+    if (!rawTasks.length) return { ok: false, count: 0, message: '没有可执行的任务' };
+
+    // IPC 参数不可信：非法 id / 链接会让任务以奇怪的方式失败，甚至串到别的任务。
+    const invalid = rawTasks.filter(
+      (task) => !isSafeId(task?.taskId) || !isSafeTaskUrl(task?.request?.url),
+    );
+    if (invalid.length) {
+      return { ok: false, count: 0, message: `有 ${invalid.length} 个任务参数不合法` };
+    }
+    const tasks = rawTasks;
 
     const config = getConfig();
     const client = getClient();
-    const concurrency = payload.concurrency ?? config.videoConcurrency ?? 2;
+    const concurrency = clampVideoConcurrency(
+      payload.concurrency ?? config.videoConcurrency,
+      2,
+    );
 
     jobRunner.start(
       tasks.map(({ taskId, request }) => ({
@@ -332,6 +354,7 @@ function registerIpc(): void {
   });
 
   ipcMain.handle('job:start', (_e, request: JobRequest) => {
+    if (!isSafeTaskUrl(request?.url)) throw new Error('视频链接不合法');
     const jobId = `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const config = getConfig();
     const client = getClient();
@@ -366,7 +389,11 @@ function registerIpc(): void {
       const config = getConfig();
       const client = getClient();
       const { taskId, request } = payload ?? ({} as typeof payload);
-      if (!taskId || !request) return { ok: false, message: '参数不完整' };
+      if (!isSafeId(taskId) || !request) return { ok: false, message: '参数不完整' };
+      const episodes = Array.isArray(request.episodes) ? request.episodes : [];
+      if (!episodes.length || episodes.length > 200 || episodes.some((ep) => !isSafeTaskUrl(ep?.url))) {
+        return { ok: false, message: '选集链接不合法或数量超过 200 集' };
+      }
 
       jobRunner.start(
         [
@@ -393,7 +420,7 @@ function registerIpc(): void {
   );
 
   ipcMain.handle('job:cancel', (_e, jobId: string) => {
-    return { ok: jobRunner.cancel(jobId) };
+    return { ok: isSafeId(jobId) && jobRunner.cancel(jobId) };
   });
 
   ipcMain.handle('batch:cancelAll', () => {
@@ -409,9 +436,13 @@ function registerIpc(): void {
   // --- 历史记录 ---
   ipcMain.handle('history:list', () => getHistoryStore().list());
 
-  ipcMain.handle('history:get', (_e, id: string) => getHistoryStore().get(id));
+  ipcMain.handle('history:get', (_e, id: string) =>
+    isSafeId(id) ? getHistoryStore().get(id) : null,
+  );
 
-  ipcMain.handle('history:delete', (_e, id: string) => ({ ok: getHistoryStore().remove(id) }));
+  ipcMain.handle('history:delete', (_e, id: string) => ({
+    ok: isSafeId(id) && getHistoryStore().remove(id),
+  }));
 
   ipcMain.handle('history:clear', () => ({ count: getHistoryStore().clear() }));
 
@@ -424,7 +455,9 @@ function registerIpc(): void {
   });
 
   ipcMain.handle('history:exportMerged', async (_e, ids: string[]) => {
-    const list = Array.isArray(ids) && ids.length ? ids : getHistoryStore().list().map((i) => i.id);
+    const list = Array.isArray(ids) && ids.length
+      ? ids.filter(isSafeId)
+      : getHistoryStore().list().map((i) => i.id);
     if (!list.length) return { ok: false, message: '没有可导出的记录' };
 
     const { content, missing } = getHistoryStore().buildMergedMarkdown(list);
@@ -449,7 +482,9 @@ function registerIpc(): void {
   });
 
   ipcMain.handle('history:exportFolder', async (_e, ids: string[]) => {
-    const list = Array.isArray(ids) && ids.length ? ids : getHistoryStore().list().map((i) => i.id);
+    const list = Array.isArray(ids) && ids.length
+      ? ids.filter(isSafeId)
+      : getHistoryStore().list().map((i) => i.id);
     if (!list.length) return { ok: false, message: '没有可导出的记录' };
 
     const picked = await dialog.showOpenDialog({
@@ -555,6 +590,7 @@ function registerIpc(): void {
 
   // --- 导出 ---
   ipcMain.handle('file:save', async (_e, defaultName: string, content: string) => {
+    if (!isSafeFileName(defaultName)) throw new Error('默认文件名不合法');
     const config = getConfig();
     const defaultPath = config.outputDir
       ? join(config.outputDir, defaultName)
@@ -578,6 +614,7 @@ function registerIpc(): void {
   });
 
   ipcMain.handle('file:exportTranscript', async (_e, defaultName: string, content: string) => {
+    if (!isSafeFileName(defaultName)) throw new Error('默认文件名不合法');
     const result = await dialog.showSaveDialog({
       title: '导出字幕',
       defaultPath: defaultName,
@@ -593,7 +630,7 @@ function registerIpc(): void {
   });
 
   ipcMain.handle('shell:open', async (_e, url: string) => {
-    if (/^https?:\/\//i.test(url)) await shell.openExternal(url);
+    if (isSafeExternalUrl(url)) await shell.openExternal(url);
   });
 
   // --- 桌面快捷方式 ---

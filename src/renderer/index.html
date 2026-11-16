@@ -149,12 +149,12 @@
     </div>
 
     <!-- 设置弹窗 -->
-    <div id="settings-modal" class="modal hidden">
+    <div id="settings-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="settings-heading">
       <div class="modal-backdrop" data-close></div>
       <div class="modal-body">
         <div class="modal-head">
-          <h2>设置</h2>
-          <button id="close-settings" class="btn btn-ghost btn-sm" type="button">关闭</button>
+          <h2 id="settings-heading">设置</h2>
+          <button id="close-settings" class="btn btn-ghost btn-sm" type="button" aria-label="关闭设置">关闭</button>
         </div>
 
         <div class="modal-content">
@@ -330,6 +330,7 @@
                 <div id="whisper-progress" class="install-progress hidden">
                   <div class="progress-bar"><div id="whisper-progress-fill" class="progress-fill"></div></div>
                   <span id="whisper-progress-text" class="progress-detail"></span>
+                  <button id="cancel-whisper" class="btn btn-ghost btn-sm hidden" type="button">取消安装</button>
                 </div>
               </div>
               <label class="field">
@@ -428,7 +429,7 @@
     </div>
 
     <!-- 合集选集弹窗 -->
-    <div id="collection-modal" class="modal hidden">
+    <div id="collection-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="collection-title">
       <div class="modal-backdrop" data-close-collection></div>
       <div class="modal-body modal-wide">
         <div class="modal-head">
@@ -479,7 +480,7 @@
       </div>
     </div>
 
-    <div id="toast" class="toast hidden"></div>
+    <div id="toast" class="toast hidden" role="status" aria-live="polite" aria-atomic="true"></div>
 
     <script src="./app.js"></script>
   </body>

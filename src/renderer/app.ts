@@ -13,6 +13,12 @@ import type {
   VideoInfo,
 } from '../core/types.js';
 import { formatCollectionTimestamp } from '../core/utils/collection.js';
+import {
+  clampTaskPercent,
+  clampVideoConcurrency,
+  isSettledStatus,
+  videoKey,
+} from '../core/utils/limits.js';
 import type { BiliSummaryApi } from '../preload/preload.js';
 
 declare global {
@@ -149,7 +155,10 @@ let tasks: Task[] = [];
 let historyEntries: HistoryEntry[] = [];
 let activeView: 'workspace' | 'history' = 'workspace';
 let toastTimer: number | undefined;
+let historySearchTimer: number | undefined;
 let importing = false;
+/** 防止双击「开始生成」造成同一批任务被提交两次（第 9 轮）。 */
+let starting = false;
 let collectionPick: CollectionPickState | null = null;
 
 const rowEls = new Map<string, HTMLElement>();
@@ -217,6 +226,14 @@ function el2<K extends keyof HTMLElementTagNameMap>(
   return node;
 }
 
+/** 弹窗打开后把焦点交给第一个可操作控件，键盘用户不会「落」在背景上（第 12 轮）。 */
+function focusFirstIn(root: HTMLElement): void {
+  const target = root.querySelector<HTMLElement>(
+    'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href]',
+  );
+  target?.focus();
+}
+
 /** 并发受限地遍历（用于批量解析视频信息）。 */
 async function mapLimit<T>(
   items: T[],
@@ -256,7 +273,7 @@ async function init(): Promise<void> {
   config = await api.getConfig();
   populateProviderSelect(config);
   el.sourceSelect.value = 'auto';
-  el.videoConcurrency.value = String(config.videoConcurrency ?? 2);
+  el.videoConcurrency.value = String(clampVideoConcurrency(config.videoConcurrency));
   el.skipHistory.checked = config.saveHistory !== false;
 
   setupSettingsForm(config);
@@ -319,14 +336,17 @@ function bindEvents(): void {
     if (config) config.llmProvider = el.providerSelect.value as LlmProviderKind;
   });
   el.videoConcurrency.addEventListener('change', () => {
-    const value = Number(el.videoConcurrency.value) || 2;
+    const value = clampVideoConcurrency(el.videoConcurrency.value, config?.videoConcurrency ?? 2);
     el.videoConcurrency.value = String(value);
     if (config) config.videoConcurrency = value;
     void api.setConcurrency(value);
   });
 
-  // 历史
-  el.historySearch.addEventListener('input', () => renderHistory());
+  // 历史：输入防抖，避免每个按键都重建整棵列表 DOM（第 11 轮）
+  el.historySearch.addEventListener('input', () => {
+    window.clearTimeout(historySearchTimer);
+    historySearchTimer = window.setTimeout(() => renderHistory(), 150);
+  });
   el.historyFilter.addEventListener('change', () => renderHistory());
   el.historyExportMerged.addEventListener('click', () => void handleHistoryExport('merged'));
   el.historyExportFolder.addEventListener('click', () => void handleHistoryExport('folder'));
@@ -353,7 +373,15 @@ function bindEvents(): void {
       });
     });
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && collectionPick) closeCollectionModal();
+    if (e.key !== 'Escape') return;
+    if (collectionPick) closeCollectionModal();
+    else if (!el.settingsModal.classList.contains('hidden')) closeSettings();
+  });
+
+  // whisper.cpp 安装可以被用户中止，避免 1.6 GB 下载无法取消（第 17 轮）
+  $<HTMLButtonElement>('cancel-whisper').addEventListener('click', () => {
+    void api.cancelAsrInstall();
+    showToast('已请求取消安装', 'info');
   });
 
   // 设置
@@ -563,6 +591,22 @@ async function resolveTasks(list: Task[], onTick?: (done: number, total: number)
       task.status = 'queued';
       task.message = '等待开始';
 
+      // 短链 / 完整链接 / BV 号指向同一个视频时，原始 URL 去重无效，
+      // 解析出 bvid + 分P 后再排除一次（第 13 轮）。
+      const key = videoKey(info.bvid, task.part);
+      const duplicate = tasks.find(
+        (other) =>
+          other !== task &&
+          other.video &&
+          other.status !== 'failed' &&
+          videoKey(other.video.bvid, other.part ?? 1) === key,
+      );
+      if (duplicate) {
+        task.status = 'skipped';
+        task.message = `与队列中的「${duplicate.video?.title ?? duplicate.url}」重复`;
+        return;
+      }
+
       if (el.skipHistory.checked) {
         const hit = historyEntries.find(
           (entry) =>
@@ -609,6 +653,7 @@ function renderQueue(): void {
 function buildTaskRow(task: Task): HTMLElement {
   const row = el2('div', `queue-row st-${task.status}`);
   row.dataset.id = task.id;
+  row.dataset.status = task.status;
 
   const cover = el2('img', 'q-cover');
   const coverSrc = task.collectionCover || task.video?.cover;
@@ -735,6 +780,7 @@ function buildTaskRow(task: Task): HTMLElement {
     removeBtn.type = 'button';
     removeBtn.addEventListener('click', () => {
       tasks = tasks.filter((t) => t.id !== task.id);
+      clearShownResultIf([task.id]);
       renderQueue();
     });
     actions.appendChild(removeBtn);
@@ -747,8 +793,14 @@ function buildTaskRow(task: Task): HTMLElement {
 }
 
 function clamp(n: number): number {
-  if (!Number.isFinite(n)) return 0;
-  return Math.max(0, Math.min(100, n));
+  return clampTaskPercent(n);
+}
+
+/** 结果对应的任务被移除/取消时清空结果区，避免新结果被旧 key 抑制（第 10 轮）。 */
+function clearShownResultIf(ids: string[]): void {
+  if (!shownResultKey || !ids.includes(shownResultKey)) return;
+  shownResultKey = null;
+  el.resultHost.innerHTML = '';
 }
 
 /** 只更新进度相关 DOM，避免整表重建导致闪烁。 */
@@ -758,7 +810,12 @@ function patchTaskRow(task: Task): void {
     renderQueue();
     return;
   }
-  row.className = `queue-row st-${task.status}`;
+  // 状态改变会改变可用操作（取消 / 重试 / 移除），必须整行重建，
+  // 否则 queued 行残留的「移除」按钮可以在任务运行中把它删掉（第 10 轮）。
+  if (row.dataset.status !== task.status) {
+    renderQueue();
+    return;
+  }
 
   const fill = row.querySelector<HTMLElement>('.progress-fill');
   const percent = row.querySelector<HTMLElement>('.q-percent');
@@ -865,6 +922,7 @@ function openCollectionModal(video: VideoInfo): void {
 
   renderCollectionModal();
   el.collectionModal.classList.remove('hidden');
+  focusFirstIn(el.collectionModal);
 }
 
 function closeCollectionModal(): void {
@@ -993,6 +1051,7 @@ async function handleCollectionConfirm(): Promise<void> {
 /* ------------------------------------------------------------------ */
 
 async function handleStartAll(only?: Task[]): Promise<void> {
+  if (starting) return;
   const pool = only ?? tasks;
   const runnable = pool.filter(
     (t) => t.status === 'queued' || t.status === 'failed' || t.status === 'cancelled',
@@ -1004,8 +1063,9 @@ async function handleStartAll(only?: Task[]): Promise<void> {
 
   const source = el.sourceSelect.value as 'auto' | TranscriptSource;
   const provider = el.providerSelect.value as LlmProviderKind;
-  const concurrency = Number(el.videoConcurrency.value) || config?.videoConcurrency || 2;
+  const concurrency = clampVideoConcurrency(el.videoConcurrency.value, config?.videoConcurrency ?? 2);
 
+  starting = true;
   for (const task of runnable) {
     task.status = 'queued';
     task.percent = 0;
@@ -1059,6 +1119,8 @@ async function handleStartAll(only?: Task[]): Promise<void> {
     showToast(`已提交 ${total} 个任务，并发 ${concurrency}`, 'ok');
   } catch (err) {
     showToast(`启动失败：${(err as Error).message}`, 'error');
+  } finally {
+    starting = false;
   }
 }
 
@@ -1069,16 +1131,21 @@ async function handleCancelAll(): Promise<void> {
 
 function handleClearDone(): void {
   const before = tasks.length;
+  const removed = tasks
+    .filter((t) => t.status === 'done' || t.status === 'skipped' || t.status === 'cancelled')
+    .map((t) => t.id);
   tasks = tasks.filter(
     (t) => t.status !== 'done' && t.status !== 'skipped' && t.status !== 'cancelled',
   );
+  clearShownResultIf(removed);
   renderQueue();
   showToast(`已清除 ${before - tasks.length} 项`, 'ok');
 }
 
 function handleProgress(progress: JobProgress): void {
   const task = tasks.find((t) => t.id === progress.jobId);
-  if (!task) return;
+  // 已结束的任务可能还会收到在途进度，不能让它「复活」成运行中（第 10 轮）
+  if (!task || isSettledStatus(task.status)) return;
   task.status = 'running';
   task.percent = progress.percent;
   task.message = progress.message;
@@ -1121,6 +1188,7 @@ function handleFailed(info: { jobId: string; message: string; hint?: string }): 
 function handleCancelled(info: { jobId: string }): void {
   const task = tasks.find((t) => t.id === info.jobId);
   if (!task) return;
+  clearShownResultIf([task.id]);
   task.status = 'cancelled';
   task.message = '已取消';
   renderQueue();
@@ -1689,6 +1757,7 @@ function updateAsrFields(): void {
 
 function openSettings(): void {
   el.settingsModal.classList.remove('hidden');
+  focusFirstIn(el.settingsModal);
   el.settingsStatus.textContent = '';
   void refreshShortcutState();
 
@@ -1757,7 +1826,7 @@ async function handleSaveSettings(): Promise<void> {
   try {
     config = await api.setConfig(partial);
     populateProviderSelect(config);
-    el.videoConcurrency.value = String(config.videoConcurrency ?? 2);
+    el.videoConcurrency.value = String(clampVideoConcurrency(config.videoConcurrency));
     await refreshLoginStatus();
     showToast('设置已保存', 'ok');
 
@@ -2000,8 +2069,10 @@ async function installWhisper(): Promise<void> {
   const box = $('whisper-progress');
   const fill = $('whisper-progress-fill');
   const text = $('whisper-progress-text');
+  const cancelBtn = $<HTMLButtonElement>('cancel-whisper');
 
   btn.disabled = true;
+  cancelBtn.classList.remove('hidden');
   box.classList.remove('hidden');
   fill.style.width = '0%';
   text.textContent = '准备下载…';
@@ -2027,6 +2098,7 @@ async function installWhisper(): Promise<void> {
     showToast('安装失败', 'error');
   } finally {
     btn.disabled = false;
+    cancelBtn.classList.add('hidden');
   }
 }
 

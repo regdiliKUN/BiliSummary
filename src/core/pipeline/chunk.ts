@@ -5,7 +5,7 @@
  * 供 LLM 逐块做结构化摘要。
  */
 import type { TranscriptSegment } from '../types.js';
-import { textWeight } from '../utils/text.js';
+import { splitSentences, textWeight } from '../utils/text.js';
 
 export interface TranscriptChunk {
   index: number;
@@ -32,6 +32,13 @@ export function chunkTranscript(
   const effectiveBudget = Math.max(1500, budget);
   const chunks: TranscriptChunk[] = [];
 
+  // 单条超长字幕（识别结果常见）不能靠 MIN_SEGMENTS_PER_CHUNK 绕过预算：
+  // 先按句子拆开，并在原时间范围内线性分配时间戳，再参与分块。
+  const normalized = segments
+    .slice()
+    .sort((a, b) => (a.start || 0) - (b.start || 0))
+    .flatMap((seg) => splitOversizedSegment(seg, effectiveBudget));
+
   let current: TranscriptSegment[] = [];
   let weight = 0;
 
@@ -48,7 +55,7 @@ export function chunkTranscript(
     weight = 0;
   };
 
-  for (const seg of segments) {
+  for (const seg of normalized) {
     const segWeight = textWeight(seg.text) + 12;
     // 已经有内容且再加这一段就超预算 -> 先切一块
     if (current.length >= MIN_SEGMENTS_PER_CHUNK && weight + segWeight > effectiveBudget) {
@@ -61,6 +68,29 @@ export function chunkTranscript(
 
   // 如果块数太多（字幕段很短导致），做一次合并
   return mergeTinyChunks(chunks, effectiveBudget);
+}
+
+/**
+ * 把明显超过单块预算的字幕拆成多条，避免上下文超限。
+ * 按字符数线性分配原时间范围；无句子边界时退化为定长切片，确保不丢字。
+ */
+function splitOversizedSegment(seg: TranscriptSegment, budget: number): TranscriptSegment[] {
+  if (textWeight(seg.text) + 12 <= budget) return [seg];
+
+  const pieces = splitSentences(seg.text);
+  const parts = pieces.length > 1
+    ? pieces
+    : (seg.text.match(/[\s\S]{1,600}/g) ?? [seg.text]);
+  const totalChars = parts.reduce((sum, part) => sum + part.length, 0) || 1;
+  const duration = Math.max(0, (seg.end || 0) - (seg.start || 0));
+  let consumed = 0;
+
+  return parts.map((part) => {
+    const start = (seg.start || 0) + duration * (consumed / totalChars);
+    consumed += part.length;
+    const end = (seg.start || 0) + duration * (consumed / totalChars);
+    return { start, end, text: part };
+  });
 }
 
 /** 合并过碎的相邻块。 */

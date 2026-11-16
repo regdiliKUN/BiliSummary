@@ -21,20 +21,9 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 
+import { sanitizeFileStem } from './output/markdown.js';
+import { isSafeId } from './utils/limits.js';
 import type { HistoryEntry, HistoryRecord, JobResult } from './types.js';
-
-/** 文件名里不能出现的字符（Windows 最严格，统一按它来）。 */
-const ILLEGAL_NAME = /[\\/:*?"<>|\r\n\t]/g;
-
-function safeFileName(input: string, maxLength = 60): string {
-  const cleaned = (input || '')
-    .replace(ILLEGAL_NAME, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, maxLength)
-    .trim();
-  return cleaned || '未命名';
-}
 
 function atomicWrite(filePath: string, content: string): void {
   const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
@@ -93,8 +82,9 @@ export class HistoryStore {
     return this.loadIndex().slice();
   }
 
-  /** 按 id 读取完整记录。 */
+  /** 按 id 读取完整记录。id 来自 IPC，必须先排除路径穿越。 */
   get(id: string): HistoryRecord | null {
+    if (!isSafeId(id)) return null;
     const entry = this.loadIndex().find((item) => item.id === id);
     if (!entry) return null;
     const file = join(this.itemsDir, `${id}.json`);
@@ -160,6 +150,7 @@ export class HistoryStore {
 
   /** 删除一条。 */
   remove(id: string): boolean {
+    if (!isSafeId(id)) return false;
     const entries = this.loadIndex();
     const idx = entries.findIndex((item) => item.id === id);
     if (idx < 0) return false;
@@ -193,6 +184,7 @@ export class HistoryStore {
 
   /** 设置收藏状态。 */
   setFavorite(id: string, favorite: boolean): HistoryEntry | null {
+    if (!isSafeId(id)) return null;
     const entry = this.loadIndex().find((item) => item.id === id);
     if (!entry) return null;
     entry.favorite = favorite;
@@ -202,6 +194,7 @@ export class HistoryStore {
 
   /** 更新标题等轻量字段。 */
   patchEntry(id: string, patch: Partial<Pick<HistoryEntry, 'title' | 'favorite'>>): HistoryEntry | null {
+    if (!isSafeId(id)) return null;
     const entry = this.loadIndex().find((item) => item.id === id);
     if (!entry) return null;
     Object.assign(entry, patch);
@@ -262,7 +255,7 @@ export class HistoryStore {
         missing.push(id);
         continue;
       }
-      const base = `${safeFileName(record.entry.title, 50)}-${record.entry.bvid}`;
+      const base = `${sanitizeFileStem(record.entry.title, 50)}-${sanitizeFileStem(record.entry.bvid, 30)}`;
       let name = `${base}.md`;
       let n = 2;
       while (used.has(name) || existsSync(join(targetDir, name))) {
@@ -288,6 +281,7 @@ export class HistoryStore {
   }
 
   private unlinkItem(id: string): void {
+    if (!isSafeId(id)) return;
     try {
       const file = join(this.itemsDir, `${id}.json`);
       if (existsSync(file)) unlinkSync(file);

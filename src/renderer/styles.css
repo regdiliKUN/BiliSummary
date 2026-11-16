@@ -815,6 +815,10 @@ body {
   gap: 5px;
 }
 
+#cancel-whisper {
+  align-self: flex-start;
+}
+
 .test-result {
   font-size: 12px;
   color: var(--text-faint);

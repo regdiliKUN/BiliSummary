@@ -35,12 +35,17 @@ export class BatchRunner<T> {
     return this.active.size;
   }
 
-  /** 追加任务并开始调度。 */
+  /** 追加任务并开始调度。重复 id 会被忽略，避免取消/回调串到别的任务。 */
   start(tasks: BatchTask<T>[], concurrency?: number): void {
     if (concurrency && concurrency > 0) {
       this.concurrency = Math.min(8, Math.max(1, Math.floor(concurrency)));
     }
-    this.pending.push(...tasks);
+    const seen = new Set<string>([...this.pending.map((task) => task.id), ...this.active.keys()]);
+    for (const task of tasks) {
+      if (!task?.id || seen.has(task.id)) continue;
+      seen.add(task.id);
+      this.pending.push(task);
+    }
     this.pump();
   }
 
@@ -73,6 +78,14 @@ export class BatchRunner<T> {
         /* 忽略 */
       }
     }
+    // 排队任务被直接移出时不会走任务完成回调，这里补一次整体进度刷新。
+    if (queued.length) {
+      try {
+        this.hooks.onSettled?.();
+      } catch {
+        /* 忽略 */
+      }
+    }
   }
 
   /** 调整并发数（立即生效）。 */
@@ -96,6 +109,12 @@ export class BatchRunner<T> {
         .then(
           (result) => {
             this.active.delete(task.id);
+            // 某些实现忽略 AbortSignal 而正常 resolve：此时仍应按取消上报，
+            // 否则界面会显示「已完成」并写入历史。
+            if (controller.signal.aborted) {
+              this.hooks.onCancelled?.(task.id);
+              return;
+            }
             try {
               this.hooks.onDone?.(task.id, result);
             } catch (err) {

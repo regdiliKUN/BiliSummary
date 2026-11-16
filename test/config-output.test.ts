@@ -1,6 +1,10 @@
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_CONFIG, mergeConfig, validateConfig } from '../src/core/config.js';
+import { ConfigStore, DEFAULT_CONFIG, mergeConfig, validateConfig } from '../src/core/config.js';
 import { renderMarkdown, renderSrt, buildFileName } from '../src/core/output/markdown.js';
+import { toSrtTimestamp } from '../src/core/utils/time.js';
 import type { VideoInfo, VideoSummary, Transcript } from '../src/core/types.js';
 
 const video: VideoInfo = {
@@ -61,6 +65,32 @@ describe('配置合并', () => {
     expect(merged).toEqual(DEFAULT_CONFIG);
     expect(merged).not.toBe(DEFAULT_CONFIG);
   });
+
+  it('忽略未知字段与嵌套字段的类型错误（第 3 轮）', () => {
+    const merged = mergeConfig({
+      openai: { model: 'x', injected: 'evil', temperature: 'hot' },
+      unexpected: { nested: true },
+    } as any);
+    expect((merged.openai as any).injected).toBeUndefined();
+    expect(merged.openai.model).toBe('x');
+    expect(merged.openai.temperature).toBe(DEFAULT_CONFIG.openai.temperature);
+    expect((merged as any).unexpected).toBeUndefined();
+  });
+});
+
+describe('配置持久化', () => {
+  it('保存后无临时文件残留且内容可重新读取（第 4 轮）', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bs-config-'));
+    try {
+      const file = join(dir, 'config.json');
+      const store = new ConfigStore(file);
+      store.save({ ...DEFAULT_CONFIG, summaryLanguage: 'en' });
+      expect(JSON.parse(readFileSync(file, 'utf8')).summaryLanguage).toBe('en');
+      expect(readdirSync(dir).filter((f) => f.includes('.tmp-'))).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('配置校验', () => {
@@ -81,6 +111,17 @@ describe('配置校验', () => {
       openai: { ...DEFAULT_CONFIG.openai, model: '' },
     });
     expect(issues.some((i) => i.includes('模型名'))).toBe(true);
+  });
+
+  it('检出 NaN 与数值越界（第 5 轮）', () => {
+    expect(validateConfig({ ...DEFAULT_CONFIG, concurrency: Number.NaN }).some((i) => i.includes('并发数'))).toBe(true);
+    expect(validateConfig({ ...DEFAULT_CONFIG, historyLimit: -2 }).some((i) => i.includes('历史条数'))).toBe(true);
+    expect(
+      validateConfig({
+        ...DEFAULT_CONFIG,
+        openai: { ...DEFAULT_CONFIG.openai, temperature: Number.NaN },
+      }).some((i) => i.includes('temperature')),
+    ).toBe(true);
   });
 });
 
@@ -119,6 +160,12 @@ describe('Markdown 渲染', () => {
 });
 
 describe('SRT 渲染', () => {
+  it('毫秒进位不会生成 ,1000（第 1 轮）', () => {
+    expect(toSrtTimestamp(0.9996)).toBe('00:00:01,000');
+    expect(toSrtTimestamp(59.9996)).toBe('00:01:00,000');
+    expect(toSrtTimestamp(Number.NaN)).toBe('00:00:00,000');
+  });
+
   it('生成标准 SRT 结构', () => {
     const srt = renderSrt({
       source: 'subtitle',
@@ -136,5 +183,15 @@ describe('文件名生成', () => {
   it('去掉非法字符', () => {
     const name = buildFileName({ ...video, title: 'a/b:c*d?e"f<g>h|i' });
     expect(name).not.toMatch(/[\\/:*?"<>|]/);
+  });
+
+  it('处理控制字符、隐藏文件名与 Windows 保留名（第 2 轮）', () => {
+    expect(buildFileName({ ...video, title: '..\u0000CON\n' })).toMatch(/^_CON-/);
+    expect(buildFileName({ ...video, title: '   ' })).toMatch(/^未命名-/);
+  });
+
+  it('Markdown 表格单元格中的竖线与换行被转义（第 15 轮）', () => {
+    const md = renderMarkdown({ video: { ...video, owner: { ...video.owner, name: 'A|B\nC' } }, summary });
+    expect(md).toContain('| UP主 | A\\|B C |');
   });
 });

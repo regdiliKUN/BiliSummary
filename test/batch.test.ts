@@ -152,6 +152,50 @@ describe('BatchRunner', () => {
     expect(onError.mock.calls[0]![1].message).toBe('boom');
   });
 
+  it('重复 id 只执行一次，避免取消串任务（第 8 轮）', async () => {
+    const ran: string[] = [];
+    const runner = new BatchRunner<string>({ onDone: (id) => ran.push(id) });
+    runner.start([
+      { id: 'dup', run: async () => '第一次' },
+      { id: 'dup', run: async () => '第二次' },
+    ], 1);
+    await tick();
+    await tick();
+    expect(ran).toEqual(['dup']);
+  });
+
+  it('取消后仍 resolve 的任务按取消上报（第 8 轮）', async () => {
+    const onDone = vi.fn();
+    const onCancelled = vi.fn();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const runner = new BatchRunner<void>({ onDone, onCancelled });
+    runner.start([{ id: 'ignore-signal', run: async () => { await gate; } }], 1);
+    await tick();
+    expect(runner.cancel('ignore-signal')).toBe(true);
+    release();
+    await tick();
+    await tick();
+    expect(onCancelled).toHaveBeenCalledWith('ignore-signal');
+    expect(onDone).not.toHaveBeenCalled();
+  });
+
+  it('cancelAll 清空排队任务时刷新整体进度（第 8 轮）', async () => {
+    const onSettled = vi.fn();
+    const gate = deferred<void>();
+    const runner = new BatchRunner<void>({ onSettled });
+    runner.start([
+      { id: 'busy', run: async () => { await gate.promise; } },
+      { id: 'queued', run: async () => {} },
+    ], 1);
+    await tick();
+    onSettled.mockClear();
+    runner.cancelAll();
+    expect(onSettled).toHaveBeenCalledTimes(1);
+    gate.resolve();
+    await tick();
+  });
+
   it('并发数可热调整', async () => {
     let concurrent = 0;
     let peak = 0;

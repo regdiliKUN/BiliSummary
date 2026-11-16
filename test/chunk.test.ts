@@ -43,6 +43,16 @@ describe('字幕分块', () => {
     expect(chunks[0]!.text).toMatch(/^\[00:00\]/);
   });
 
+  it('超长单条字幕按句子拆分且不丢字（第 14 轮）', () => {
+    const sentence = '这是一句用于验证长字幕拆分是否保留内容的话。';
+    const longText = Array.from({ length: 80 }, () => sentence).join('');
+    const chunks = chunkTranscript([{ start: 5, end: 65, text: longText }], 8000);
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]!.text.replace(/\[\d+:\d+\] /g, '')).toBe(longText);
+    expect(chunks[0]!.start).toBe(5);
+    expect(chunks[0]!.end).toBe(65);
+  });
+
   it('不丢字幕', () => {
     const segs = makeSegments(120);
     const chunks = chunkTranscript(segs, 3000);

@@ -26,10 +26,10 @@ export function renderMarkdown(params: {
   // 元信息表
   lines.push('| 项目 | 内容 |');
   lines.push('| --- | --- |');
-  lines.push(`| UP主 | ${video.owner.name} |`);
+  lines.push(`| UP主 | ${escapeCell(video.owner.name)} |`);
   lines.push(`| 时长 | ${formatDurationCn(video.duration)} |`);
   lines.push(`| BV号 | ${video.bvid} |`);
-  lines.push(`| 链接 | ${video.url} |`);
+  lines.push(`| 链接 | ${escapeCell(video.url)} |`);
   if (video.pubdate) lines.push(`| 发布于 | ${formatDate(video.pubdate)} |`);
   lines.push(`| 播放 | ${formatCount(video.stat.view)} |`);
   lines.push(`| 点赞 | ${formatCount(video.stat.like)} |`);
@@ -286,14 +286,32 @@ export function renderSrt(transcript: Transcript): string {
   return lines.join('\n');
 }
 
-/** 生成本地文件名。 */
-export function buildFileName(video: VideoInfo, suffix = '摘要'): string {
-  const safe = video.title
-    .replace(/[\\/:*?"<>|]/g, '')
+/**
+ * 生成可跨 Windows / macOS / Linux 使用的文件名主干。
+ *
+ * 除了路径分隔符与保留字符，还要处理控制字符、开头句点（隐藏文件）
+ * 以及 Windows 设备名（CON / NUL / COM1 ...），否则导出的文件会创建失败
+ * 或在文件管理器里不可见。
+ */
+export function sanitizeFileStem(input: string, maxLength = 60): string {
+  const cleaned = (input || '')
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/[\\/:*?"<>|]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
-    .slice(0, 60);
-  return `${safe}-${video.bvid}-${suffix}.md`;
+    .replace(/^[.\s]+/, '')
+    .slice(0, maxLength)
+    .trim();
+  if (!cleaned) return '未命名';
+  // Windows 保留设备名不区分大小写，加前缀后才是合法文件名。
+  return /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(cleaned) ? `_${cleaned}` : cleaned;
+}
+
+/** 生成本地文件名。 */
+export function buildFileName(video: VideoInfo, suffix = '摘要'): string {
+  const safe = sanitizeFileStem(video.title, 60);
+  const bvid = sanitizeFileStem(video.bvid, 30);
+  return `${safe}-${bvid}-${sanitizeFileStem(suffix, 20)}.md`;
 }
 
 function formatCount(n: number): string {

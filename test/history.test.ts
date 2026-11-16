@@ -173,6 +173,14 @@ describe('HistoryStore', () => {
     expect(content).toContain('正文内容');
   });
 
+  it('拒绝路径穿越形式的 id（第 7 轮）', () => {
+    const entry = store.add(makeResult());
+    expect(store.get('../index')).toBeNull();
+    expect(store.remove(`..\\${entry.id}`)).toBe(false);
+    expect(store.setFavorite('../index', true)).toBeNull();
+    expect(store.list()).toHaveLength(1);
+  });
+
   it('索引损坏时降级为空列表而不是崩溃', () => {
     store.add(makeResult());
     const indexFile = join(dir, 'index.json');

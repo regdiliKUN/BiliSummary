@@ -3,7 +3,7 @@
  *
  * core 层不依赖 Electron：文件路径由调用方传入。
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { AppConfig, LlmProviderKind } from './types.js';
 
@@ -80,7 +80,18 @@ export function mergeConfig(
     const fallback = out[key];
     if (fallback && typeof fallback === 'object' && !Array.isArray(fallback)) {
       if (typeof incoming === 'object' && !Array.isArray(incoming)) {
-        out[key] = { ...fallback, ...(incoming as object) } as never;
+        // 只接纳默认配置里已经存在的键：IPC 传入的未知字段（如 outputDir
+        // 之外的任意属性）不能借浅合并写进用户配置或污染后续读取。
+        const allowed = fallback as unknown as Record<string, unknown>;
+        const from = incoming as Record<string, unknown>;
+        const picked: Record<string, unknown> = {};
+        for (const name of Object.keys(allowed)) {
+          const value = from[name];
+          if (value !== undefined && typeof value === typeof allowed[name]) {
+            picked[name] = value;
+          }
+        }
+        out[key] = { ...fallback, ...picked } as never;
       }
       continue;
     }
@@ -91,9 +102,14 @@ export function mergeConfig(
   return out;
 }
 
-/** 校验配置的必填项，返回可直接展示给用户的问题列表。 */
+/** 校验配置的必填项与数值边界，返回可直接展示给用户的问题列表。 */
 export function validateConfig(config: AppConfig): string[] {
   const issues: string[] = [];
+  const inRange = (label: string, value: number, min: number, max: number): void => {
+    if (!Number.isFinite(value) || value < min || value > max) {
+      issues.push(`${label}需在 ${min}-${max} 之间`);
+    }
+  };
 
   if (config.llmProvider === 'openai') {
     if (!config.openai.baseUrl) issues.push('OpenAI 兼容接口地址不能为空');
@@ -116,12 +132,25 @@ export function validateConfig(config: AppConfig): string[] {
     if (!config.whisperCpp.modelPath) issues.push('whisper.cpp 模型文件路径不能为空');
   }
 
-  if (config.concurrency < 1 || config.concurrency > 8) {
-    issues.push('并发数需在 1-8 之间');
+  inRange('并发数', config.concurrency, 1, 8);
+  inRange('视频并发数', config.videoConcurrency, 1, 6);
+  if (!Number.isInteger(config.historyLimit) || (config.historyLimit !== -1 && config.historyLimit < 1)) {
+    issues.push('历史条数需为 -1（不限制）或不小于 1 的整数');
   }
-  if (!config.videoConcurrency || config.videoConcurrency < 1 || config.videoConcurrency > 6) {
-    issues.push('视频并发数需在 1-6 之间');
+  if (!Number.isInteger(config.danmakuLimit) || config.danmakuLimit < 0 || config.danmakuLimit > 5000) {
+    issues.push('弹幕数量需在 0-5000 之间');
   }
+
+  // NaN 会通过 typeof 检查混进配置，必须显式用 Number.isFinite 拦截。
+  const llm = config.llmProvider === 'deepseek'
+    ? config.deepseek
+    : config.llmProvider === 'ollama'
+      ? config.ollama
+      : config.openai;
+  inRange('temperature', llm.temperature, 0, 2);
+  inRange('maxTokens', llm.maxTokens, 256, 128_000);
+  inRange('上下文字符预算', llm.contextChars, 2000, 200_000);
+
   if (!config.summaryLanguage.trim()) {
     issues.push('摘要语言不能为空');
   }
@@ -159,7 +188,20 @@ export class ConfigStore {
     const merged = mergeConfig(config);
     const dir = dirname(this.filePath);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    writeFileSync(this.filePath, JSON.stringify(merged, null, 2), 'utf8');
+    // 与历史索引一样采用「临时文件 + rename」：进程被强杀或磁盘写满时，
+    // 原配置仍完整可读，不会出现半截 JSON 导致下次启动全部回退默认值。
+    const tmp = `${this.filePath}.tmp-${process.pid}`;
+    try {
+      writeFileSync(tmp, JSON.stringify(merged, null, 2), 'utf8');
+      renameSync(tmp, this.filePath);
+    } catch (err) {
+      try {
+        if (existsSync(tmp)) renameSync(tmp, `${tmp}.failed`);
+      } catch {
+        /* 保留残留文件供排查，不覆盖原始错误 */
+      }
+      throw err;
+    }
     this.cache = merged;
     return merged;
   }
