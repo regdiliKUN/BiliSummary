@@ -265,10 +265,16 @@ export interface AsrResult {
   model?: string;
 }
 
+export interface AsrTranscribeOptions {
+  signal?: AbortSignal;
+  /** 转写进度 0-100（只有能报告进度的后端才会调用，例如 whisper.cpp） */
+  onProgress?: (percent: number) => void;
+}
+
 export interface AsrProvider {
   readonly kind: AsrProviderKind;
   readonly name: string;
-  transcribe(audioPath: string, opts: { signal?: AbortSignal }): Promise<AsrResult>;
+  transcribe(audioPath: string, opts: AsrTranscribeOptions): Promise<AsrResult>;
   healthCheck(): Promise<{ ok: boolean; message: string }>;
 }
 

@@ -5,8 +5,16 @@ import { WhisperCppProvider } from './whisperCpp.js';
 
 export { OpenAiAsrProvider } from './openaiCompat.js';
 export { WhisperCppProvider } from './whisperCpp.js';
-export { prepareAudio, resolveFfmpegPath } from './audio.js';
-export type { AudioWorkspace } from './audio.js';
+export {
+  convertToWav,
+  downloadAudio,
+  encodeUploadParts,
+  FFMPEG_MISSING_MESSAGE,
+  prepareAudio,
+  resolveFfmpegPath,
+} from './audio.js';
+export type { AudioWorkspace, DownloadedAudio, DownloadProgress, UploadPart } from './audio.js';
+export { transcribeParts } from './parts.js';
 
 /** 根据配置创建 ASR 供应商；'none' 返回 null。 */
 export function createAsrProvider(

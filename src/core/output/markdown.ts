@@ -6,7 +6,9 @@ import type {
   VideoInfo,
   VideoSummary,
 } from '../types.js';
+import type { HotMoment } from '../pipeline/hotmoments.js';
 import { formatCollectionTimestamp } from '../utils/collection.js';
+import { sampleEvenly } from '../utils/sample.js';
 import { formatDate, formatDurationCn, formatTimestamp, toSrtTimestamp } from '../utils/time.js';
 
 /** 渲染完整的摘要 Markdown。 */
@@ -15,9 +17,11 @@ export function renderMarkdown(params: {
   summary: VideoSummary;
   transcript?: Transcript;
   danmaku?: DanmakuItem[];
+  /** 弹幕高光时刻（由全量弹幕算出）；有它时「高光弹幕」列真正的名场面 */
+  hotMoments?: HotMoment[];
   includeTranscript?: boolean;
 }): string {
-  const { video, summary, transcript, danmaku, includeTranscript } = params;
+  const { video, summary, transcript, danmaku, hotMoments, includeTranscript } = params;
   const lines: string[] = [];
 
   lines.push(`# ${video.title}`);
@@ -118,10 +122,20 @@ export function renderMarkdown(params: {
     }
   }
 
-  if (danmaku?.length) {
+  if (hotMoments?.length) {
     lines.push('## 高光弹幕');
     lines.push('');
-    for (const item of danmaku.slice(0, 50)) {
+    for (const moment of hotMoments) {
+      lines.push(
+        `- \`${formatTimestamp(moment.time)}\` ${moment.samples.join('、')}（${moment.count} 条弹幕）`,
+      );
+    }
+    lines.push('');
+  } else if (danmaku?.length) {
+    // 没有明显热点时，沿时间轴均匀摘录，而不是只列开头的 50 条
+    lines.push('## 弹幕摘录');
+    lines.push('');
+    for (const item of sampleEvenly(danmaku, 50)) {
       lines.push(`- \`${formatTimestamp(item.time)}\` ${item.text}`);
     }
     lines.push('');

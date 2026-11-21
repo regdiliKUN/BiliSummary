@@ -8,14 +8,27 @@ directories:
   output: release
   buildResources: resources
 
+# 只保留中文与英文语言包。Electron 默认带 55 种语言（约 40 MB），
+# 界面只有中文，其余语言只会让安装包与安装目录白白变大。
+electronLanguages:
+  - zh-CN
+  - en-US
+
 # ffmpeg-static 是二进制，必须解包到 asar 外面才能执行
 asarUnpack:
   - node_modules/ffmpeg-static/**
 
 files:
   - dist/**/*
+  # sourcemap 只用于本地调试，不进安装包
+  - "!dist/**/*.map"
   - package.json
   - node_modules/ffmpeg-static/**/*
+  # 运行时只用到 ffmpeg-static 的 index.js（仅依赖 Node 内置模块）和 ffmpeg 二进制。
+  # 它声明的 dependencies 全是 npm install 阶段下载二进制用的，不需要进安装包。
+  - "!node_modules/ffmpeg-static/{install.js,example.js}"
+  - "!node_modules/ffmpeg-static/node_modules${/*}"
+  - "!node_modules/{@derhuerst,buffer-from,caseless,concat-stream,debug,env-paths,http-response-object,inherits,ms,parse-cache-control,progress,readable-stream,safe-buffer,string_decoder,typedarray,util-deprecate}${/*}"
 
 win:
   # 图标同时用于 exe 与桌面快捷方式
