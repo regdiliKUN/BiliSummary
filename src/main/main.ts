@@ -376,7 +376,7 @@ function registerIpc(): void {
             }),
         },
       ],
-      config.videoConcurrency ?? 2,
+      clampVideoConcurrency(config.videoConcurrency, 2),
     );
 
     return { jobId };
@@ -412,7 +412,7 @@ function registerIpc(): void {
               }),
           },
         ],
-        config.videoConcurrency ?? 2,
+        clampVideoConcurrency(config.videoConcurrency, 2),
       );
 
       return { ok: true };
@@ -429,7 +429,8 @@ function registerIpc(): void {
   });
 
   ipcMain.handle('batch:setConcurrency', (_e, value: number) => {
-    jobRunner.setConcurrency(value);
+    // 与 batch:start 一致钳制到 1-6；调度器自身的上限是 8，不能直接透传
+    jobRunner.setConcurrency(clampVideoConcurrency(value, 2));
     return { ok: true };
   });
 
@@ -447,7 +448,8 @@ function registerIpc(): void {
   ipcMain.handle('history:clear', () => ({ count: getHistoryStore().clear() }));
 
   ipcMain.handle('history:favorite', (_e, id: string, favorite: boolean) => {
-    return getHistoryStore().setFavorite(id, favorite);
+    // IPC 参数不可信：非布尔值不能原样写进索引
+    return getHistoryStore().setFavorite(id, favorite === true);
   });
 
   ipcMain.handle('history:find', (_e, bvid: string, part: number) => {

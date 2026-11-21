@@ -5,9 +5,31 @@
  * `/audio/transcriptions` 且支持 `verbose_json` 的服务。
  */
 import { openAsBlob } from 'node:fs';
-import { basename } from 'node:path';
-import type { AppConfig, AsrProvider, AsrResult, TranscriptSegment } from '../types.js';
+import { basename, extname } from 'node:path';
+import type {
+  AppConfig,
+  AsrProvider,
+  AsrResult,
+  AsrTranscribeOptions,
+  TranscriptSegment,
+} from '../types.js';
 import { cleanSubtitleText } from '../utils/text.js';
+
+/** 按扩展名声明上传文件的 MIME，部分服务会据此判断格式。 */
+const AUDIO_MIME: Record<string, string> = {
+  '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav',
+  '.m4a': 'audio/mp4',
+  '.mp4': 'audio/mp4',
+  '.ogg': 'audio/ogg',
+  '.opus': 'audio/ogg',
+  '.flac': 'audio/flac',
+  '.webm': 'audio/webm',
+};
+
+export function audioMimeType(path: string): string {
+  return AUDIO_MIME[extname(path).toLowerCase()] ?? 'application/octet-stream';
+}
 
 export class OpenAiAsrProvider implements AsrProvider {
   readonly kind = 'openai' as const;
@@ -24,12 +46,12 @@ export class OpenAiAsrProvider implements AsrProvider {
     this.name = `OpenAI 兼容 ASR (${cfg.model})`;
   }
 
-  async transcribe(audioPath: string, opts: { signal?: AbortSignal } = {}): Promise<AsrResult> {
+  async transcribe(audioPath: string, opts: AsrTranscribeOptions = {}): Promise<AsrResult> {
     // 请求发出前就已被取消
     if (opts.signal?.aborted) throw new Error('转写已取消');
 
     const form = new FormData();
-    const blob = await openAsBlob(audioPath, { type: 'audio/wav' });
+    const blob = await openAsBlob(audioPath, { type: audioMimeType(audioPath) });
     form.append('file', blob, basename(audioPath));
     form.append('model', this.cfg.model);
     form.append('response_format', 'verbose_json');

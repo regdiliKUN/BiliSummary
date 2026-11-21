@@ -6,9 +6,47 @@
  */
 import { spawn } from 'node:child_process';
 import { readFile, rm } from 'node:fs/promises';
+import { availableParallelism } from 'node:os';
 import { basename, dirname, join } from 'node:path';
-import type { AppConfig, AsrProvider, AsrResult, TranscriptSegment } from '../types.js';
+import type {
+  AppConfig,
+  AsrProvider,
+  AsrResult,
+  AsrTranscribeOptions,
+  TranscriptSegment,
+} from '../types.js';
 import { cleanSubtitleText } from '../utils/text.js';
+
+/**
+ * whisper.cpp 的线程数。
+ *
+ * whisper-cli 默认最多只用 4 个线程；它的计算主要吃物理核心，
+ * 多核机器上按逻辑核数的一半（约等于物理核数）给，上限 8，少于 4 核时用满。
+ */
+export function pickWhisperThreads(logicalCores: number = safeParallelism()): number {
+  if (!Number.isFinite(logicalCores) || logicalCores < 1) return 4;
+  const cores = Math.floor(logicalCores);
+  if (cores <= 4) return cores;
+  return Math.min(8, Math.max(4, Math.floor(cores / 2)));
+}
+
+function safeParallelism(): number {
+  try {
+    return availableParallelism();
+  } catch {
+    return 4;
+  }
+}
+
+/** 从 whisper-cli `-pp` 的输出里取最新的进度百分比（没有则返回 null）。 */
+export function parseWhisperProgress(chunk: string): number | null {
+  let last: number | null = null;
+  for (const match of chunk.matchAll(/progress\s*=\s*(\d{1,3})\s*%/g)) {
+    const value = Number(match[1]);
+    if (Number.isFinite(value)) last = Math.min(100, Math.max(0, value));
+  }
+  return last;
+}
 
 export class WhisperCppProvider implements AsrProvider {
   readonly kind = 'whisper-cpp' as const;
@@ -23,7 +61,7 @@ export class WhisperCppProvider implements AsrProvider {
     this.name = 'whisper.cpp 本地转写';
   }
 
-  async transcribe(audioPath: string, opts: { signal?: AbortSignal } = {}): Promise<AsrResult> {
+  async transcribe(audioPath: string, opts: AsrTranscribeOptions = {}): Promise<AsrResult> {
     // 请求发出前就已被取消
     if (opts.signal?.aborted) throw new Error('转写已取消');
 
@@ -39,7 +77,12 @@ export class WhisperCppProvider implements AsrProvider {
       '-l',
       this.cfg.language || 'auto',
       '-nt',
+      '-t',
+      String(pickWhisperThreads()),
+      // 打印进度，长音频转写时界面能看到走到了哪里（-pp 比 -oj 更早引入，支持 -oj 的版本都有）
+      '-pp',
     ];
+    let lastProgress = -1;
 
     await new Promise<void>((resolve, reject) => {
       const proc = spawn(this.cfg.binaryPath, args, { windowsHide: true });
@@ -86,8 +129,14 @@ export class WhisperCppProvider implements AsrProvider {
         if (stdout.length > 20000) stdout = stdout.slice(-20000);
       });
       proc.stderr?.on('data', (d) => {
-        stderr += d.toString();
+        const text = d.toString();
+        stderr += text;
         if (stderr.length > 20000) stderr = stderr.slice(-20000);
+        const progress = parseWhisperProgress(text);
+        if (progress !== null && progress !== lastProgress) {
+          lastProgress = progress;
+          opts.onProgress?.(progress);
+        }
       });
 
       proc.on('error', (err) => {

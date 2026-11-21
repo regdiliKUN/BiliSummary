@@ -3,12 +3,24 @@
  *
  * 保持与 Electron 无关，便于单独测试或在 CLI 中复用。
  */
+import { join } from 'node:path';
 import { BilibiliClient } from '../bilibili/client.js';
-import { createAsrProvider, prepareAudio, resolveFfmpegPath } from '../asr/index.js';
+import {
+  convertToWav,
+  createAsrProvider,
+  downloadAudio,
+  encodeUploadParts,
+  FFMPEG_MISSING_MESSAGE,
+  resolveFfmpegPath,
+  transcribeParts,
+} from '../asr/index.js';
+import { sampleEvenly } from '../utils/sample.js';
+import { findHotMoments } from './hotmoments.js';
 import { createProvider } from '../providers/index.js';
 import { renderMarkdown, renderSrt, renderTranscriptMarkdown } from '../output/markdown.js';
 import type {
   AppConfig,
+  AsrResult,
   DanmakuItem,
   JobProgress,
   JobRequest,
@@ -81,6 +93,16 @@ export async function runJob(opts: RunJobOptions): Promise<JobResult> {
 
     report('fetching-info', `已获取视频信息：${video.title}`, 15);
 
+    // 弹幕与字幕互不依赖：提前并行抓取，省掉一次串行的网络往返。
+    // 全量弹幕只用来找高光时刻，失败或取消都按「没有弹幕」处理，不影响主流程。
+    const wantDanmaku = config.useDanmaku && config.danmakuLimit > 0;
+    const danmakuTask: Promise<DanmakuItem[]> = wantDanmaku
+      ? client.getDanmaku(cid, 0, signal).catch((err: unknown) => {
+          if (!signal?.aborted) console.warn('弹幕抓取失败，忽略：', (err as Error).message);
+          return [];
+        })
+      : Promise.resolve([]);
+
     // --- 2. 字幕 / 转写 ---
     const provider = opts.provider ?? createProvider(providerKind, config, client);
 
@@ -131,16 +153,14 @@ export async function runJob(opts: RunJobOptions): Promise<JobResult> {
     }
 
     // --- 3. 弹幕（摘要需要它来定位名场面，必须先抓）---
-    let danmaku: DanmakuItem[] = [];
-    if (config.useDanmaku && config.danmakuLimit > 0) {
+    let allDanmaku: DanmakuItem[] = [];
+    if (wantDanmaku) {
       report('fetching-danmaku', '正在抓取弹幕', 42);
-      try {
-        danmaku = await client.getDanmaku(cid, config.danmakuLimit);
-      } catch (err) {
-        console.warn('弹幕抓取失败，忽略：', (err as Error).message);
-        danmaku = [];
-      }
+      allDanmaku = await danmakuTask;
     }
+    // 高光时刻用全量弹幕计算；结果里只按上限沿时间轴均匀抽样保存，历史文件不会膨胀
+    const danmaku = sampleEvenly(allDanmaku, config.danmakuLimit);
+    const hotMoments = findHotMoments(allDanmaku, video.duration);
 
     // --- 4. 摘要 ---
     const summary = await summarize({
@@ -148,7 +168,7 @@ export async function runJob(opts: RunJobOptions): Promise<JobResult> {
       video,
       transcript,
       config,
-      danmaku,
+      danmaku: allDanmaku,
       signal,
       onProgress: (info) => {
         report('summarizing', info.message, info.percent, info.detail);
@@ -162,6 +182,7 @@ export async function runJob(opts: RunJobOptions): Promise<JobResult> {
       summary,
       transcript,
       danmaku,
+      hotMoments,
       includeTranscript: config.exportTranscript,
     });
     report('done', '完成', 100);
@@ -273,13 +294,51 @@ async function transcribeAudio(params: FetchTranscriptParams): Promise<Transcrip
     throw new JobError('未配置语音识别（ASR）服务。');
   }
 
-  report('downloading-audio', '正在下载音频', 25);
+  // 没有 ffmpeg 就不必白白下载几十 MB 的音频
   const ffmpegPath = await resolveFfmpegPath(config.whisperCpp.ffmpegPath);
-  const workspace = await prepareAudio(client, bvid, cid, aid, ffmpegPath, signal);
+  if (!ffmpegPath) {
+    throw new JobError(FFMPEG_MISSING_MESSAGE, '在「设置 → 语音识别」里指定 ffmpeg 可执行文件路径后重试。');
+  }
+
+  report('downloading-audio', '正在下载音频', 25);
+  let lastReport = 0;
+  const audio = await downloadAudio(client, bvid, cid, aid, signal, (received, total) => {
+    // 数据块很密，限频到 4 次/秒，避免刷爆 IPC
+    const now = Date.now();
+    if (now - lastReport < 250) return;
+    lastReport = now;
+    const mb = (n: number) => (n / 1048576).toFixed(1);
+    report(
+      'downloading-audio',
+      total ? `正在下载音频 ${mb(received)} / ${mb(total)} MB` : `正在下载音频 ${mb(received)} MB`,
+      total ? 25 + Math.round((received / total) * 5) : 25,
+    );
+  });
 
   try {
-    report('transcribing', `正在转写音频（${asr.name}）`, 32);
-    const result = await asr.transcribe(workspace.wavPath, { signal });
+    const label = `正在转写音频（${asr.name}）`;
+    let result: AsrResult;
+    if (asr.kind === 'openai') {
+      // 云端接口有单文件上限（OpenAI / Groq 为 25 MB），wav 每小时约 115 MB：
+      // 压成 32kbps mp3 并按 10 分钟切段上传，长视频也不会被拒，上传量约为原来的 1/30。
+      report('transcribing', '正在压缩音频', 30);
+      const parts = await encodeUploadParts(ffmpegPath, audio.rawPath, audio.dir, { signal });
+      report('transcribing', `${label} 0/${parts.length} 段`, 32);
+      result = await transcribeParts(asr, parts, {
+        signal,
+        onPart: (done, total) =>
+          report('transcribing', `${label} ${done}/${total} 段`, 32 + Math.round((done / total) * 8)),
+      });
+    } else {
+      report('transcribing', '正在转换音频格式', 30);
+      const wavPath = join(audio.dir, 'audio.wav');
+      await convertToWav(ffmpegPath, audio.rawPath, wavPath, signal);
+      report('transcribing', label, 32);
+      result = await asr.transcribe(wavPath, {
+        signal,
+        onProgress: (p) => report('transcribing', `${label} ${p}%`, 32 + Math.round(p * 0.08)),
+      });
+    }
     if (!result.segments.length) {
       throw new JobError('语音识别没有产出任何内容。');
     }
@@ -290,7 +349,7 @@ async function transcribeAudio(params: FetchTranscriptParams): Promise<Transcrip
       segments: result.segments,
     };
   } finally {
-    await workspace.cleanup();
+    await audio.cleanup();
   }
 }
 

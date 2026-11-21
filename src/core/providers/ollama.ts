@@ -6,6 +6,34 @@
  */
 import type { AppConfig, ChatRequest, ChatResponse, LlmProvider } from '../types.js';
 import { pickOllamaModel } from '../modelpicker.js';
+import { estimateTokens } from '../utils/text.js';
+
+const CTX_STEP = 2048;
+const CTX_MIN = 8192;
+const CTX_MAX = 32768;
+
+function roundUpCtx(tokens: number): number {
+  return Math.min(CTX_MAX, Math.max(CTX_MIN, Math.ceil(tokens / CTX_STEP) * CTX_STEP));
+}
+
+/**
+ * 计算 Ollama 的上下文窗口 num_ctx。
+ *
+ * Ollama 默认只有 2K–4K，超出的提示词会被静默截掉（系统提示与开头字幕丢失，
+ * 摘要质量骤降却没有任何报错）。这里按「单块字符预算 + 输出上限」给一个稳定的基础值：
+ * 同样大小的分块请求用同一个值，避免 Ollama 因 num_ctx 变化反复重载模型；
+ * 只有合并阶段等超长请求才按实际需要临时调大。
+ */
+export function pickNumCtx(
+  promptText: string,
+  numPredict: number,
+  contextChars: number,
+): number {
+  // 预算按「中文 ×2」加权，约等于 token 数的 2 倍；再留 2K 给提示词模板与简介
+  const base = roundUpCtx(Math.ceil((contextChars || 8000) / 2) + numPredict + 2048);
+  const needed = roundUpCtx(estimateTokens(promptText) + numPredict + 512);
+  return Math.max(base, needed);
+}
 
 export class OllamaProvider implements LlmProvider {
   readonly kind = 'ollama' as const;
@@ -74,13 +102,19 @@ export class OllamaProvider implements LlmProvider {
     req.signal?.addEventListener('abort', onAbort, { once: true });
 
     try {
+      const numPredict = req.maxTokens ?? this.cfg.maxTokens;
       const body: Record<string, unknown> = {
         model: this.cfg.model,
         messages: req.messages,
         stream: false,
         options: {
           temperature: req.temperature ?? this.cfg.temperature,
-          num_predict: req.maxTokens ?? this.cfg.maxTokens,
+          num_predict: numPredict,
+          num_ctx: pickNumCtx(
+            req.messages.map((m) => m.content).join('\n'),
+            numPredict,
+            this.cfg.contextChars,
+          ),
         },
       };
       if (req.json) body.format = 'json';

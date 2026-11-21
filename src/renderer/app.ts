@@ -12,6 +12,7 @@ import type {
   VideoCollection,
   VideoInfo,
 } from '../core/types.js';
+import { renderSrt, sanitizeFileStem } from '../core/output/markdown.js';
 import { formatCollectionTimestamp } from '../core/utils/collection.js';
 import {
   clampTaskPercent,
@@ -627,7 +628,7 @@ async function resolveTasks(list: Task[], onTick?: (done: number, total: number)
     } finally {
       done += 1;
       onTick?.(done, list.length);
-      renderQueue();
+      rerenderTaskRow(task);
     }
   });
 }
@@ -647,6 +648,25 @@ function renderQueue(): void {
     el.queueList.appendChild(row);
   }
 
+  updateOverall();
+}
+
+/**
+ * 只重建某一行。
+ *
+ * 状态变化要换操作按钮，但没必要拆掉整张表：100 个视频的批量里，
+ * 每个任务开始/完成都整表重建是 O(n²) 的 DOM 操作，还会把用户正在操作的
+ * 分P 下拉框直接关掉。队列增删时才走 renderQueue。
+ */
+function rerenderTaskRow(task: Task): void {
+  const old = rowEls.get(task.id);
+  if (!old || !old.isConnected) {
+    renderQueue();
+    return;
+  }
+  const row = buildTaskRow(task);
+  old.replaceWith(row);
+  rowEls.set(task.id, row);
   updateOverall();
 }
 
@@ -698,7 +718,7 @@ function buildTaskRow(task: Task): HTMLElement {
       task.part = Number(select.value);
       task.status = task.status === 'done' || task.status === 'skipped' ? 'queued' : task.status;
       task.result = undefined;
-      renderQueue();
+      rerenderTaskRow(task);
     });
     titleLine.appendChild(select);
   }
@@ -769,7 +789,7 @@ function buildTaskRow(task: Task): HTMLElement {
       task.error = undefined;
       task.hint = undefined;
       task.message = '等待开始';
-      renderQueue();
+      rerenderTaskRow(task);
       void handleStartAll([task]);
     });
     actions.appendChild(retryBtn);
@@ -806,14 +826,10 @@ function clearShownResultIf(ids: string[]): void {
 /** 只更新进度相关 DOM，避免整表重建导致闪烁。 */
 function patchTaskRow(task: Task): void {
   const row = rowEls.get(task.id);
-  if (!row) {
-    renderQueue();
-    return;
-  }
   // 状态改变会改变可用操作（取消 / 重试 / 移除），必须整行重建，
   // 否则 queued 行残留的「移除」按钮可以在任务运行中把它删掉（第 10 轮）。
-  if (row.dataset.status !== task.status) {
-    renderQueue();
+  if (!row || row.dataset.status !== task.status) {
+    rerenderTaskRow(task);
     return;
   }
 
@@ -1111,7 +1127,7 @@ async function handleStartAll(only?: Task[]): Promise<void> {
         task.status = 'failed';
         task.message = '启动失败';
         task.error = res.message || '合集任务启动失败';
-        renderQueue();
+        rerenderTaskRow(task);
       }
     }
 
@@ -1162,7 +1178,7 @@ function handleDone(result: JobResult): void {
     task.message = `${result.summary.model} · ${SOURCE_LABEL[result.summary.transcriptSource] ?? '已生成'}`;
     task.error = undefined;
     task.result = result;
-    renderQueue();
+    rerenderTaskRow(task);
   }
   showToast(`「${result.video.title}」摘要完成`, 'ok');
 
@@ -1181,7 +1197,7 @@ function handleFailed(info: { jobId: string; message: string; hint?: string }): 
   task.message = '生成失败';
   task.error = info.message;
   task.hint = info.hint;
-  renderQueue();
+  rerenderTaskRow(task);
   showToast(`${task.video?.title ?? task.url} 失败`, 'error');
 }
 
@@ -1191,7 +1207,7 @@ function handleCancelled(info: { jobId: string }): void {
   clearShownResultIf([task.id]);
   task.status = 'cancelled';
   task.message = '已取消';
-  renderQueue();
+  rerenderTaskRow(task);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1288,9 +1304,15 @@ function createResultPanel(
   const saveBtn = el2('button', 'btn btn-ghost btn-sm', '保存');
   saveBtn.type = 'button';
   saveBtn.addEventListener('click', async () => {
-    const name = `${result.video.title.replace(/[\\/:*?"<>|]/g, '').slice(0, 50)}-${result.video.bvid}.md`;
-    const res = await api.saveMarkdown(name, result.markdown);
-    if (res.ok && res.path) showToast(`已保存到 ${res.path}`, 'ok');
+    // 与历史「按文件导出」同一套规则：控制字符 / 保留名 / 开头句点都会被处理，
+    // 否则主进程的文件名校验会直接拒绝，按钮看起来「没反应」
+    const name = `${sanitizeFileStem(result.video.title, 50)}-${sanitizeFileStem(result.video.bvid, 30)}.md`;
+    try {
+      const res = await api.saveMarkdown(name, result.markdown);
+      if (res.ok && res.path) showToast(`已保存到 ${res.path}`, 'ok');
+    } catch (err) {
+      showToast(`保存失败：${(err as Error).message}`, 'error');
+    }
   });
   actions.appendChild(saveBtn);
 
@@ -1298,11 +1320,16 @@ function createResultPanel(
   srtBtn.type = 'button';
   srtBtn.disabled = !result.transcript.segments.length;
   srtBtn.addEventListener('click', async () => {
-    const content = result.transcript.segments
-      .map((seg, i) => `${i + 1}\n${srtTime(seg.start)} --> ${srtTime(seg.end)}\n${seg.text}\n`)
-      .join('\n');
-    const res = await api.exportTranscript(`${result.video.bvid}.srt`, content);
-    if (res.ok && res.path) showToast(`已导出到 ${res.path}`, 'ok');
+    // 复用 core 的 renderSrt：界面以前自带一份时间戳格式化，0.9996s 会写出非法的 ",1000"
+    try {
+      const res = await api.exportTranscript(
+        `${sanitizeFileStem(result.video.bvid, 30)}.srt`,
+        renderSrt(result.transcript),
+      );
+      if (res.ok && res.path) showToast(`已导出到 ${res.path}`, 'ok');
+    } catch (err) {
+      showToast(`导出失败：${(err as Error).message}`, 'error');
+    }
   });
   actions.appendChild(srtBtn);
 
@@ -1455,16 +1482,6 @@ function buildList(items: string[]): HTMLElement {
   const ul = el2('ul', 'points');
   for (const item of items) ul.appendChild(el2('li', undefined, item));
   return ul;
-}
-
-function srtTime(seconds: number): string {
-  const s = Math.max(0, seconds || 0);
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const sec = Math.floor(s % 60);
-  const ms = Math.round((s - Math.floor(s)) * 1000);
-  const pad = (n: number, w = 2) => String(n).padStart(w, '0');
-  return `${pad(h)}:${pad(m)}:${pad(sec)},${pad(ms, 3)}`;
 }
 
 /* ------------------------------------------------------------------ */

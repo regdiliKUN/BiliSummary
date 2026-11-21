@@ -1,5 +1,5 @@
 /** 发布版本一致性回归（第 18 / 20 轮）。 */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -15,7 +15,8 @@ describe('发布版本一致性', () => {
     expect(lock.packages['']?.version).toBe(pkg.version);
   });
 
-  it('latest.yml 指向当前构建版本', () => {
+  // release/ 下除说明文档外都不入库：CI 的干净检出里没有 latest.yml，只在本地打包后校验。
+  it.skipIf(!existsSync(join(root, 'release/latest.yml')))('latest.yml 指向当前构建版本', () => {
     const yml = read('release/latest.yml');
     expect(yml).toMatch(new RegExp(`^version:\\s*${pkg.version.replace(/\./g, '\\.')}$`, 'm'));
     expect(yml).toContain(`BiliSummary-${pkg.version}-x64-setup.exe`);

@@ -4,7 +4,9 @@
  * 覆盖：视频信息、分P、官方字幕、官方 AI 总结、音频直链、弹幕。
  * 所有请求统一带上桌面浏览器 UA 与 Referer，避免被风控拦下。
  */
-import { createHash } from 'node:crypto';
+import { createWriteStream } from 'node:fs';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import type {
   CollectionEpisode,
   DanmakuItem,
@@ -15,11 +17,21 @@ import type {
   VideoPart,
   VideoStat,
 } from '../types.js';
+import { sampleEvenly } from '../utils/sample.js';
 import { cleanSubtitleText, normalizeText } from '../utils/text.js';
 import { extractKey, getMixinKey, signParams } from './wbi.js';
 
 const API_BASE = 'https://api.bilibili.com';
 const WEB_BASE = 'https://www.bilibili.com';
+
+/**
+ * 视频信息缓存时长。
+ *
+ * 一个视频从「解析加入队列」到「真正开始生成」要依次调用 resolve + getVideoInfo 两轮，
+ * 不缓存时同一个 view 接口要打 4 次；缓存后只打 1 次，既快又少触发风控。
+ */
+const VIDEO_INFO_TTL_MS = 10 * 60 * 1000;
+const VIDEO_INFO_CACHE_MAX = 200;
 
 const DEFAULT_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36';
@@ -137,6 +149,10 @@ export class BilibiliClient {
   private buvidPromise: Promise<void> | null = null;
   /** 当前使用的 UA 序号，0 为浏览器 UA，后续为降级 UA */
   private uaIndex = 0;
+  /** bvid -> 视频信息（含合集补齐结果） */
+  private readonly infoCache = new Map<string, { info: VideoInfo; expires: number }>();
+  /** 同一 bvid 正在进行中的请求，并发调用共享同一个结果 */
+  private readonly infoInflight = new Map<string, Promise<VideoInfo>>();
 
   constructor(opts: BilibiliClientOptions = {}) {
     this.cookie = opts.cookie?.trim() || '';
@@ -151,6 +167,8 @@ export class BilibiliClient {
    */
   setCookie(cookie: string): void {
     this.cookie = (cookie || '').trim();
+    // 登录态会影响部分稿件的可见性，换账号后不能沿用旧的视频信息
+    this.infoCache.clear();
   }
 
   /** 当前生效的 UA。 */
@@ -403,25 +421,61 @@ export class BilibiliClient {
     }
 
     if (parsed.bvid) {
-      const data = await this.getJson<{ aid: number }>(
-        `${API_BASE}/x/web-interface/view?bvid=${parsed.bvid}`,
-      );
-      return { bvid: parsed.bvid, aid: data.aid, page: parsed.page };
+      // aid 就在完整的视频信息里：直接取完整信息并缓存，
+      // 调用方紧接着的 getVideoInfo 会命中缓存，省掉一次重复的 view 请求。
+      const info = await this.getVideoInfo(parsed.bvid);
+      return { bvid: parsed.bvid, aid: info.aid, page: parsed.page };
     }
 
     if (parsed.aid) {
-      const data = await this.getJson<{ bvid: string }>(
-        `${API_BASE}/x/web-interface/view?aid=${parsed.aid}`,
-      );
-      return { bvid: data.bvid, aid: parsed.aid, page: parsed.page };
+      const data = await this.getJson<any>(`${API_BASE}/x/web-interface/view?aid=${parsed.aid}`);
+      const bvid = typeof data?.bvid === 'string' ? data.bvid : '';
+      if (bvid) this.rememberVideoInfo(bvid, await this.buildVideoInfo(data));
+      return { bvid, aid: parsed.aid, page: parsed.page };
     }
 
     throw new BilibiliError('无法解析视频标识');
   }
 
-  /** 获取视频基本信息。 */
+  /**
+   * 获取视频基本信息（带短期缓存）。
+   *
+   * 调用方（runJob 等）会改写返回值的 title / cid / duration，
+   * 所以每次都返回独立的副本，缓存里的原件不会被污染。
+   */
   async getVideoInfo(bvid: string): Promise<VideoInfo> {
-    const data = await this.getJson<any>(`${API_BASE}/x/web-interface/view?bvid=${bvid}`);
+    const cached = this.infoCache.get(bvid);
+    if (cached && cached.expires > Date.now()) return structuredClone(cached.info);
+
+    let pending = this.infoInflight.get(bvid);
+    if (!pending) {
+      pending = (async () => {
+        const data = await this.getJson<any>(`${API_BASE}/x/web-interface/view?bvid=${bvid}`);
+        const info = await this.buildVideoInfo(data);
+        this.rememberVideoInfo(bvid, info);
+        return info;
+      })();
+      this.infoInflight.set(bvid, pending);
+      // 成败都要移出；失败的结果不缓存，下次重新请求
+      const settle = () => this.infoInflight.delete(bvid);
+      pending.then(settle, settle);
+    }
+    return structuredClone(await pending);
+  }
+
+  /** 写入视频信息缓存；超过上限时淘汰最早写入的条目。 */
+  private rememberVideoInfo(bvid: string, info: VideoInfo): void {
+    this.infoCache.delete(bvid);
+    this.infoCache.set(bvid, { info, expires: Date.now() + VIDEO_INFO_TTL_MS });
+    while (this.infoCache.size > VIDEO_INFO_CACHE_MAX) {
+      const oldest = this.infoCache.keys().next().value;
+      if (oldest === undefined) break;
+      this.infoCache.delete(oldest);
+    }
+  }
+
+  /** 把 view 接口的原始数据整理成 VideoInfo（必要时补齐合集分页）。 */
+  private async buildVideoInfo(data: any): Promise<VideoInfo> {
     const parts: VideoPart[] = (data.pages || []).map((p: any, i: number) => ({
       cid: p.cid,
       page: p.page ?? i + 1,
@@ -679,16 +733,19 @@ export class BilibiliClient {
   }
 
   /**
-   * 获取音频直链（DASH）。
-   * 返回按优先级排序的候选地址，下载时逐个尝试（CDN 可能有多个可用节点）。
+   * 获取音频直链（DASH），只用于语音识别。
+   *
+   * 音频最终会被 ffmpeg 转成 16kHz 单声道，原始码率再高也不会让识别更准，
+   * 所以普通 AAC 音轨按码率从低到高排（下载量通常只有最高档的 1/3）；
+   * 杜比 / Hi-Res 无损体积大得多，只作为最后的兜底。
+   * 每条音轨的主地址与备用地址都会列出，下载时逐个尝试（CDN 可能有多个可用节点）。
    */
   async getAudioUrls(bvid: string, cid: number, aid?: number): Promise<string[]> {
     const params = new URLSearchParams({
       bvid,
       cid: String(cid),
-      qn: '80',
-      fnval: '4048',
-      fourk: '1',
+      // 16 = DASH。只需要音轨，不必请求 HDR / 4K / 杜比视界等视频格式
+      fnval: '16',
     });
     if (aid) params.set('avid', String(aid));
 
@@ -698,17 +755,18 @@ export class BilibiliClient {
     );
 
     const dash = data?.dash;
+    const byBandwidthAsc = (list: any[]) =>
+      list.slice().sort((a, b) => (a?.bandwidth || 0) - (b?.bandwidth || 0));
     const audioList: any[] = [
-      ...(dash?.flac?.audio || []),
-      ...(dash?.dolby?.audio || []),
-      ...(dash?.audio || []),
+      ...byBandwidthAsc(asArray(dash?.audio)),
+      ...byBandwidthAsc(asArray(dash?.dolby?.audio)),
+      // Hi-Res 的 flac.audio 是单个对象而不是数组，直接展开会抛「not iterable」
+      ...asArray(dash?.flac?.audio),
     ];
 
     const urls: string[] = [];
 
     if (audioList.length) {
-      // 码率高的优先
-      audioList.sort((a, b) => (b.bandwidth || 0) - (a.bandwidth || 0));
       for (const item of audioList) {
         const primary = item.baseUrl || item.base_url;
         if (primary) urls.push(primary);
@@ -785,12 +843,101 @@ export class BilibiliClient {
     }
   }
 
-  /** 获取弹幕（XML 协议，需解压）。 */
-  async getDanmaku(oid: number, limit = 0): Promise<DanmakuItem[]> {
+  /**
+   * 流式下载到文件，返回写入的字节数。
+   *
+   * 长视频的音频可达上百 MB，不能像 downloadBinary 那样整个读进主进程内存。
+   * 超时按「空闲时间」计算：只要数据还在流动就不会被掐断，慢网络也能下完长视频；
+   * 连续 idleTimeout 毫秒没有收到新数据才判定超时。
+   */
+  async downloadToFile(
+    url: string,
+    referer: string,
+    dest: string,
+    opts: {
+      signal?: AbortSignal;
+      idleTimeout?: number;
+      onProgress?: (received: number, total: number) => void;
+    } = {},
+  ): Promise<number> {
+    const { signal, idleTimeout = 60000, onProgress } = opts;
+    if (signal?.aborted) throw new BilibiliError('下载已取消', -2, url);
+
+    const controller = new AbortController();
+    let timedOut = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const arm = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, idleTimeout);
+    };
+    const onAbort = () => controller.abort();
+    signal?.addEventListener('abort', onAbort, { once: true });
+    arm();
+
+    try {
+      const res = await this.fetchImpl(url, {
+        headers: { 'User-Agent': this.currentUa, Referer: referer, Origin: WEB_BASE },
+        signal: controller.signal,
+      });
+      if (!res.ok) {
+        throw new BilibiliError(
+          res.status === 403
+            ? '音频 CDN 拒绝访问（HTTP 403）。通常意味着当前网络所在地区无法访问 B 站媒体服务器，可尝试切换网络或代理。'
+            : `下载失败 HTTP ${res.status}`,
+          res.status,
+          url,
+        );
+      }
+      if (!res.body) throw new BilibiliError('下载失败：响应没有内容', -1, url);
+
+      const total = Number(res.headers?.get?.('content-length') ?? 0) || 0;
+      let received = 0;
+      const source = Readable.fromWeb(res.body as never);
+      source.on('data', (chunk: Buffer) => {
+        received += chunk.length;
+        arm();
+        onProgress?.(received, total);
+      });
+      await pipeline(source, createWriteStream(dest));
+
+      // 连接中途断开时流可能「正常」结束，但文件是残的
+      if (total > 0 && received !== total) {
+        throw new BilibiliError(`下载不完整：${received}/${total} 字节`, -1, url);
+      }
+      return received;
+    } catch (err) {
+      if (err instanceof BilibiliError) throw err;
+      if (signal?.aborted) throw new BilibiliError('下载已取消', -2, url);
+      if (timedOut) {
+        throw new BilibiliError(
+          `下载超时（${Math.round(idleTimeout / 1000)} 秒没有收到数据），网络过慢或连接已中断`,
+          -1,
+          url,
+        );
+      }
+      throw new BilibiliError(`下载失败：${(err as Error).message}`, -1, url);
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+    }
+  }
+
+  /**
+   * 获取弹幕（XML 协议，需解压）。
+   *
+   * @param limit 大于 0 时，沿时间轴均匀抽样到这么多条（而不是只留开头那一段）。
+   */
+  async getDanmaku(oid: number, limit = 0, signal?: AbortSignal): Promise<DanmakuItem[]> {
     const { gunzipSync, inflateSync, unzipSync } = await import('node:zlib');
     const url = `${API_BASE}/x/v1/dm/list.so?oid=${oid}`;
+    if (signal?.aborted) throw new BilibiliError('请求已取消', -2, url);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 15000);
+    const onAbort = () => controller.abort();
+    signal?.addEventListener('abort', onAbort, { once: true });
     let buf: Buffer;
     try {
       const res = await this.fetchImpl(url, {
@@ -801,6 +948,7 @@ export class BilibiliClient {
       buf = Buffer.from(await res.arrayBuffer());
     } finally {
       clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
     }
 
     let xml = '';
@@ -843,7 +991,8 @@ export class BilibiliClient {
     }
 
     items.sort((a, b) => a.time - b.time);
-    return limit > 0 ? items.slice(0, limit) : items;
+    // 截头会让后半段视频的弹幕全部丢失：均匀抽样才能保留整条时间轴的分布
+    return limit > 0 ? sampleEvenly(items, limit) : items;
   }
 
   /** 校验 Cookie 是否可用（返回登录用户名或错误信息）。 */
@@ -868,6 +1017,12 @@ export class BilibiliClient {
   static sign(params: Record<string, string | number | undefined>, mixinKey: string): string {
     return signParams(params, mixinKey, Math.floor(Date.now() / 1000)).signedQuery;
   }
+}
+
+/** 接口里同一个字段有时是数组、有时是单个对象，统一成数组。 */
+function asArray(value: unknown): any[] {
+  if (Array.isArray(value)) return value;
+  return value && typeof value === 'object' ? [value] : [];
 }
 
 /** 把 http:// 升级为 https://（B 站图片在混合内容下会被浏览器拦截）。 */

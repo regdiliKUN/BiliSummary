@@ -15,7 +15,7 @@ import type {
   DeepSeekProviderConfig,
   LlmProvider,
 } from '../types.js';
-import { OpenAiProvider } from './openai.js';
+import { OpenAiProvider, type RetryOptions } from './openai.js';
 
 export class DeepSeekProvider implements LlmProvider {
   readonly kind = 'deepseek' as const;
@@ -24,9 +24,9 @@ export class DeepSeekProvider implements LlmProvider {
   private readonly cfg: DeepSeekProviderConfig;
   private readonly inner: OpenAiProvider;
 
-  constructor(cfg: DeepSeekProviderConfig, fetchImpl: typeof fetch = fetch) {
+  constructor(cfg: DeepSeekProviderConfig, fetchImpl: typeof fetch = fetch, retry: RetryOptions = {}) {
     this.cfg = cfg;
-    this.inner = new OpenAiProvider(cfg, fetchImpl);
+    this.inner = new OpenAiProvider(cfg, fetchImpl, undefined, retry);
     this.name = `DeepSeek (${cfg.model || 'deepseek-chat'})`;
   }
 

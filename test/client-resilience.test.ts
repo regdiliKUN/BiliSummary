@@ -55,10 +55,11 @@ describe('UA 降级与风控重试', () => {
 
     const client = new BilibiliClient({ fetchImpl: fetchImpl as unknown as typeof fetch });
     await client.resolve('BV1xx411c7mD');
-    // 再发一次请求，应已恢复首选 UA
+    // 再请求另一个视频（同一个视频会命中信息缓存，不发请求），应已恢复首选 UA
     const before = seen.length;
-    await client.resolve('BV1xx411c7mD');
+    await client.resolve('BV1xx411c7mE');
     expect(seen.length).toBeGreaterThan(before);
+    expect(seen[seen.length - 1]).toBe(seen[0]);
   });
 
   it('多次 412 也不会让 UA 越界', async () => {
