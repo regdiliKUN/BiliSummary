@@ -473,4 +473,4 @@ npm run verify:release
 
 ## License
 
-MIT
+MIT，见 [LICENSE](LICENSE)。
